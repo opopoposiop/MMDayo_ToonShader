@@ -1,0 +1,778 @@
+#include "../hlsl/resources.hlsli"
+#include "../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+        "category": "render",
+        "textures": [
+            {"name": "ZBuf",         "format": "D32_FLOAT",          "view": "DSV" },
+            {"name": "RasterOut",    "format": "R16G16B16A16_FLOAT",  "view": "RTV" },
+            {"name": "MyNormalDepth","format": "R32G32B32A32_FLOAT",  "view": "RTV" },
+            {"name": "MyGBuffer1",   "format": "R32G32B32A32_FLOAT",  "view": "RTV" },
+            {"name": "MyGBuffer2",   "format": "R32G32_FLOAT",        "view": "RTV" },
+            {"name": "SSAO",         "format": "R8_UNORM",            "view": "UAV" }
+        ],
+        "samplers": [
+            { "name":"samp",      "filter":"ANISOTROPIC" },
+            { "name":"ClampSamp", "filter":"LINEAR",  "addressU":"CLAMP", "addressV":"CLAMP" },
+            { "name":"SkySamp",   "filter":"LINEAR",  "addressU":"WRAP",  "addressV":"CLAMP" },
+            { "name":"PointSamp", "filter":"POINT",   "addressU":"CLAMP", "addressV":"CLAMP" }
+        ],
+        "passes": [
+            {
+                "name":"BG", "type":"postprocess",
+                "pixelShader": "PS", "vertexShader": "VS",
+                "RTV": [ {"name":"RasterOut", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }]
+            },
+            {
+                "name": "GBuffer",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+                "RTV": [
+                    { "name": "MyNormalDepth", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} },
+                    { "name": "MyGBuffer1",    "clear":true, "value":{"x":-1, "y":-1, "z":-1, "w":-1} },
+                    { "name": "MyGBuffer2",    "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }
+                ],
+                "rasterizerDesc": { "cullMode": "none" }
+            },
+            {
+                "name": "Edge",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+                "RTV": [{ "name": "RasterOut", "clear": false }],
+                "blendDesc": {
+                    "renderTarget0": { "blendEnable": false }
+                },
+                "rasterizerDesc": { "cullMode": "front" }
+            },
+            {
+                "name": "MMD",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": false },
+                "RTV": [{ "name": "RasterOut", "clear": false }],
+                "blendDesc": {
+                    "renderTarget0": {
+                        "blendEnable": true,
+                        "srcBlend": "one", "destBlend": "inv_src_alpha", "blendOp": "add",
+                        "srcBlendAlpha": "one",   "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"
+                    }
+                },
+                "rasterizerDesc": { "cullMode": "none" }
+            },
+            {
+                "name": "MMDTrans",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": false },
+                "RTV": [{ "name": "RasterOut", "clear": false }],
+                "blendDesc": {
+                    "renderTarget0": {
+                        "blendEnable": true,
+                        "srcBlend": "one", "destBlend": "inv_src_alpha", "blendOp": "add",
+                        "srcBlendAlpha": "one",   "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"
+                    }
+                },
+                "depthStencilDesc": { "depthWriteMask": "zero", "depthFunc": "less_equal" },
+                "rasterizerDesc": { "cullMode": "none" }
+            },
+            {
+                "name": "SSAO", "type": "raytracing",
+                "raygenShader": "RayGeneration",
+                "missShader":   [ "Miss" ],
+                "hitGroup": [ { "type":"TRIANGLES", "closestHit":"ClosestHit", "anyHit":"AnyHit", "intersection":"" } ],
+                "maxPayloadSize": 4, "maxAttributeSize": 8, "maxRecursionDepth": 1,
+                "UAV": [ {"name":"SSAO"} ]
+            },
+            {
+                "name":"Copy", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS"
+            },
+            {"name":"FXAA", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS"}
+        ]
+    }
+}
+[HLSL]
+
+// ToonAnime_27.fxdayo
+//
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ToonAnime_26 の「人物 PMX の目材質が発光／透過する」回帰を修正
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// 【症状】
+//  ToonAnime_26 で人物 PMX の材質「目」（白目・瞳）が白く発光、
+//  または背後が透ける状態になった（ToonAnime26.png）。
+//  ToonAnime_23 では正常に描写される（ToonAnime23.png）。
+//
+// 【真因 — AL 誤判定材質の扱いが 23→26 で激変した】
+//  目材質はスペキュラほぼ黒 + shininess ≥ 100 のものが多く、
+//  IsALEmissiveMat（方式A: スペキュラ黒 + shininess≥100）が
+//  AutoLuminous 発光材質と判定する。判定自体は 23 も 26 も同一だが、
+//  判定後の描画が異なる:
+//   ・ToonAnime_23: 発光材質もフルブライト色を【通常アルファ合成
+//     (α=1)＋深度書き込みあり】で描画。不透明な目はそのまま塗られ、
+//     見た目はほぼ通常描画 → 正常に見えた。
+//   ・ToonAnime_26: 発光材質を一律【純加算合成（出力α=0）＋深度
+//     書き込みなし(MMDTrans)】に変更。白目が背景に加算されて白飛び
+//     （白の上に加算 → 飽和して真っ白）、深度も書かないため背後の
+//     ジオメトリが透けて見える。
+//  26 のこの変更は「交差する発光ビーム同士が互いを切り取らない」
+//  ために必要だったが、不透明な発光（誤判定された目を含む）まで
+//  加算・非遮蔽にしたのが行き過ぎだった。
+//
+// 【修正 — 発光材質をピクセル最終αで「不透明発光／半透明発光」に二分】
+//  発光カバレッジ emitCover（= 材質α × テクスチャα）で振り分ける:
+//   ・不透明発光 (emitCover ≥ OPAQUE_CUT)
+//       … 目・発光パネル等。23 と同じく【遮蔽する通常合成】。
+//         MMD パスで描画（深度テスト＋書き込み ON）。
+//         前乗算 α=1 出力 → result = emitLin + dst·0（完全上書き）。
+//         背後を正しく隠し、白飛び・透過が発生しない。
+//   ・半透明発光 (emitCover < OPAQUE_CUT)
+//       … 発光ビーム・グロー板等。26 と同じく【純加算合成】。
+//         MMDTrans パスで描画（深度書き込み OFF、出力 α=0）。
+//         交差ビームは互いを切り取らず、重なりは黒く潰れない。
+//
+//  これにより:
+//   ・目（不透明）は 23 と同一の見た目に復帰（発光・透過しない）
+//   ・半透明発光ビームは 26 の成果をそのまま維持
+//   ・非発光半透明が発光を遮蔽しない（26 の成果）も維持
+//   ・不透明／半透明の判定は従来通りピクセル単位の最終α
+//
+//  パス構成・ブレンド設定は 26 から変更なし。変更は HLSL の振り分け
+//  ロジックのみ:
+//   (1) MMDColor: AL 発光分岐を emitCover で二分（上記）
+//   (2) MMD パス PS: 「発光材質を一律 discard」を廃止。
+//       c.a < OPAQUE_CUT の discard が半透明発光（α=0）も自然に弾く。
+//   (3) MMDTrans パス PS: 判定を「c.a ≥ OPAQUE_CUT なら discard」に
+//       単純化。不透明発光（α=1）は MMD パス描画済みなので除外され、
+//       半透明発光（α=0）と非発光半透明のみ描画される。
+//
+//  AutoLuminous 互換の Bloom 処理は PPAL.fxdayo（ポストプロセス）が担当。
+//  （GBuffer への AL 材質書き込みは従来通り維持 → PPAL の解析に影響なし）
+
+// Radeon向け: bindlessテクスチャ添え字をNonUniformResourceIndexで囲う
+#define NURI NonUniformResourceIndex
+
+// ============================================================
+// エッジパラメータ
+// ============================================================
+static const float  EdgeWidth          = 0.002;
+static const float  EdgeAlphaThreshold = 0.9;
+static const float4 EDGE_GRAY          = float4(0.55, 0.55, 0.55, 1.0);
+
+// PMX マテリアル描画フラグ ビット定義
+//   bit0 0x01: 両面描画   bit4 0x10: エッジ描画
+static const uint   MAT_FLAG_DOUBLESIDE = 0x01u;
+static const uint   MAT_FLAG_EDGE       = 0x10u;
+
+// ============================================================
+// AutoLuminous 判定定数 (PPAL.fxdayo と同値)
+// ============================================================
+static const float  AL_SPEC_THRESHOLD  = 0.05;
+static const float  AL_SHIN_THRESHOLD  = 100.0;
+static const float  AL_MAX_OVERBRIGHT  = 16.0;
+
+// AutoLuminous 発光材質判定（方式A: スペキュラ黒 + shininess≥100）
+//   MMD / MMDTrans / Edge / GBuffer の各パスから共通利用するため
+//   全 #ifdef ブロックの外側でグローバルに定義する。
+bool IsALEmissiveMat(MMDMaterial m)
+{
+	float specMax = max(m.specular.r, max(m.specular.g, m.specular.b));
+	return (specMax <= AL_SPEC_THRESHOLD) && (m.shininess >= AL_SHIN_THRESHOLD);
+}
+
+// ============================================================
+// 不透明／半透明 ピクセル単位判定しきい値
+// ============================================================
+//   最終α(前乗算後の .a) がこの値以上のピクセルのみ「不透明」とみなし、
+//   MMD パスで深度を書き込む。それ未満は半透明として MMDTrans パスへ。
+//   発光材質も同じしきい値で「不透明発光／半透明発光」に二分される。
+static const float  OPAQUE_CUT          = 0.999;
+
+// ============================================================
+// 2段階アニメ影パラメータ
+// ============================================================
+static const float SHADOW1_THRESHOLD = 0.1;
+static const float SHADOW2_THRESHOLD = -0.15;
+static const float SHADOW_SMOOTH     = 0.02;
+static const float SHADOW1_MULT      = 0.65;
+static const float SHADOW2_MULT      = 0.35;
+static const float TOON_V_LIGHT      = 0.1;
+static const float TOON_V_SHADOW1    = 0.5;
+static const float TOON_V_SHADOW2    = 0.9;
+
+// ============================================================
+// SSAOパラメータ
+// ============================================================
+static const float AO_RADIUS   = 5.0;
+static const float AO_BIAS     = 1e-3;
+static const int   AO_SAMPLES  = 4;
+static const float AO_STRENGTH = 0.5;
+
+// ============================================================
+// FXAA高品質版パラメータ
+// ============================================================
+static const float FXAA_EDGE_THRESHOLD     = 0.063;
+static const float FXAA_EDGE_THRESHOLD_MIN = 0.0312;
+static const float FXAA_SUBPIX_QUALITY     = 0.75;
+static const float FXAA_MAX_SPAN           = 12.0;
+
+// ============================================================
+// PNG アルファ透過 — 明示処理パラメータ
+// ============================================================
+static const float TEX_ALPHA_CUT       = 0.004;   // PNG 8bit α 最小有効値 ≒ 1/255
+static const float ALPHA_EPSILON       = 1e-4;    // ブレンド経路の α 下限ガード
+
+
+// ============================================================
+// BGパス: スカイボックス描画
+// ============================================================
+#ifdef YRZ_PASS_BG
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+void RaySaySay(float2 Tex, out float3 ray, out float3 pos, uniform bool normalizeFlag = true)
+{
+	float2 tex = (Tex.xy - 0.5) * 2.0;
+	if (Perspective) {
+		ray =
+			ViewMatrix._13_23_33 / ProjectionMatrix._33
+			+ (ViewMatrix._11_21_31 * tex.x / ProjectionMatrix._11)
+			- (ViewMatrix._12_22_32 * tex.y / ProjectionMatrix._22);
+		if (normalizeFlag)
+			ray = normalize(ray);
+		pos = CameraPosition;
+	} else {
+		ray = CameraForward;
+		pos = CameraPosition + CameraRight * tex.x / ProjectionMatrix._11 - CameraUp * tex.y / ProjectionMatrix._22;
+	}
+}
+
+static float SkyboxPhi = 0;
+
+float2 LongRat(float3 v)
+{
+	return float2(atan2(v.z, v.x), acos(v.y)) / float2(-2 * PI, PI) - float2(0.25 + SkyboxPhi, 0);
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 o = 0;
+	float3 rd, ro;
+	RaySaySay(vso.uv, rd, ro);
+	float2 uv = LongRat(rd);
+	o = Skybox.SampleLevel(SkySamp, uv, 0);
+	return float4(o.rgb, 0);
+}
+#endif
+
+
+// ============================================================
+// Edgeパス: 外形(シルエット)エッジ描画
+// ============================================================
+//   (A) エッジ描画フラグ (PMX material flag bit4 = 0x10) を尊重。
+//   (B) テクスチャの α チャネルをサンプルし、透過テクセルを discard。
+#ifdef YRZ_PASS_Edge
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float3 normal:NORMAL, float3 tangent:TANGENT, float2 uv:TEXCOORD )
+{
+	VSO o = (VSO)0;
+	float4 clipPos = mul(pos, ViewProjectionMatrix);
+
+	float3 viewNormal = mul(normal, (float3x3)ViewMatrix);
+	float2 dir = viewNormal.xy;
+
+	float len = length(dir);
+	if (len < 1e-5) dir = float2(1, 0);
+	else            dir /= len;
+
+	clipPos.xy += dir * EdgeWidth * clipPos.w;
+	o.position = clipPos;
+	o.uv       = uv;
+	return o;
+}
+
+float4 PS(VSO vso, uint iFace:SV_PrimitiveID) : SV_TARGET
+{
+	uint imo = ModelIndex;
+	MMDMaterial m = MMDMaterials[imo][Faces[imo][iFace]];
+
+	// (A) エッジ描画フラグ尊重 (PMX material flag bit4 = 0x10)
+	if ((m.drawFlag & MAT_FLAG_EDGE) == 0) discard;
+
+	// マテリアル自体が半透明ならエッジなし
+	if (m.diffuse.a < EdgeAlphaThreshold) discard;
+
+	// AutoLuminous 発光材質はエッジを描画しない
+	if (IsALEmissiveMat(m)) discard;
+
+	// (B) テクスチャ アルファチャネル透過に対応（透過テクセルにエッジを描かない）
+	uint tidx = TextureTable[imo];
+	if (m.tex >= 0) {
+		float texA = Textures[NURI(tidx + m.tex)].Sample(samp, vso.uv).a;
+		if (texA < EdgeAlphaThreshold) discard;
+	}
+
+	return (m.edgeSize >= 1.0) ? m.edgeColor : EDGE_GRAY;
+}
+#endif
+
+
+// ============================================================
+// MMDパス / MMDTransパス / GBufferパス: 2段階アニメ調トゥーンシェーディング
+// ============================================================
+//   MMD     : 不透明ピクセル（不透明発光を含む。深度書き込み ON）
+//   MMDTrans: 非発光の半透明 ＋ 半透明発光（深度書き込み OFF）
+//   GBuffer : 全材質の法線/深度/ID を G-Buffer へ出力（PPAL 用）
+// ============================================================
+#if defined(YRZ_PASS_MMD) || defined(YRZ_PASS_MMDTrans) || defined(YRZ_PASS_GBuffer)
+struct VSO {
+	float4 position:SV_POSITION;
+	float3 normal:NORMAL;
+	float2 uv:TEXCOORD;
+	float2 spuv:TEXCOORD1;
+	float3 eye:TEXCOORD2;
+	float  viewZ:TEXCOORD3;
+};
+
+VSO VS( float4 pos : POSITION, float3 normal:NORMAL, float3 tangent:TANGENT, float2 uv:TEXCOORD )
+{
+	VSO o = (VSO)0;
+	o.position = mul(pos, ViewProjectionMatrix);
+	o.uv       = uv;
+	o.spuv     = mul(normal, (float3x2)ViewMatrix) * float2(0.5, -0.5) + 0.5;
+	o.normal   = normal;
+	o.eye      = CameraPosition - pos.xyz;
+	o.viewZ    = mul(pos, ViewMatrix).z;
+	return o;
+}
+
+void CalcAnimeShadow(float NoL, out float inShadow1, out float inShadow2)
+{
+	inShadow1 = 1.0 - smoothstep(SHADOW1_THRESHOLD - SHADOW_SMOOTH,
+	                              SHADOW1_THRESHOLD + SHADOW_SMOOTH, NoL);
+	inShadow2 = 1.0 - smoothstep(SHADOW2_THRESHOLD - SHADOW_SMOOTH,
+	                              SHADOW2_THRESHOLD + SHADOW_SMOOTH, NoL);
+}
+
+// ──────────────────────────────────────────────────────────────
+// MMDColor
+//   戻り値は【前乗算アルファ】(premultiplied alpha)。
+//     ・通常材質       : float4(rgb·a, a)        → 通常のアルファ合成
+//     ・AL不透明発光   : float4(emitLin, 1)      → 遮蔽する通常合成（23 互換）
+//     ・AL半透明発光   : float4(emitLin·cov, 0)  → 純加算合成（重なり減衰なし）
+//   戻り値 .a を「ピクセル単位の不透明度」として MMD/MMDTrans の振り分けに使う。
+//   texAlpha には PNG テクスチャ単独の α 原値を出力。
+// ──────────────────────────────────────────────────────────────
+float4 MMDColor(VSO vso, uint iFace, bool vface, out float texAlpha)
+{
+	uint imo = ModelIndex;
+	MMDMaterial m = MMDMaterials[imo][Faces[imo][iFace]];
+	if (!vface && ((m.drawFlag & MAT_FLAG_DOUBLESIDE) == 0)) discard;
+
+	float3 Le  = LightColor;
+	float3 L   = -LightDirection;
+	float3 N   = vso.normal;
+	float3 V   = normalize(vso.eye);
+	float3 H   = normalize(L + V);
+	float  NoL = dot(N, L);
+	uint  tidx = TextureTable[imo];
+
+	// ── PNG テクスチャサンプリング ──────────────────────────────
+	float4 tex  = 1;
+	float  texA0 = 1.0;  // テクスチャ未指定材質では完全不透明とみなす
+	if (m.tex >= 0) {
+		tex   = Textures[NURI(tidx + m.tex)].Sample(samp, vso.uv);
+		texA0 = tex.a;  // ★ 原 α を保存（lerp 加工の影響を受けない）
+
+		tex.rgb = lerp(1, tex.rgb * m.textureMulValue.rgb + m.textureAddValue.rgb,
+		               m.textureMulValue.a + m.textureAddValue.a);
+
+		// PNG アルファ早期テスト：透過テクセルを即 discard。
+		if (texA0 < TEX_ALPHA_CUT) discard;
+	}
+	texAlpha = texA0;
+
+	// tex.a も明示的に texA0 で上書き
+	tex.a = texA0;
+
+	float4 o = float4(saturate(m.diffuse.rgb * Le + m.ambient), m.diffuse.a) * tex;
+
+	// ── AutoLuminous 発光材質（方式A）: 早期リターン ──────────────
+	//   ピクセル最終α (emitCover) で「不透明発光／半透明発光」を二分する。
+	//   【ToonAnime_27 修正】不透明発光（目・発光パネル等 — AL 誤判定
+	//   される目材質を含む）は 23 と同じく背後を遮蔽する通常合成にし、
+	//   白飛び・透過の回帰を解消。半透明発光（ビーム等）のみ 26 の
+	//   純加算合成を維持する。
+	if (IsALEmissiveMat(m))
+	{
+		float emissiveScale = clamp(
+			(m.shininess - AL_SHIN_THRESHOLD) / 10.0, 0.0, AL_MAX_OVERBRIGHT);
+		float3 emitColor = saturate((m.diffuse.rgb + m.ambient) * tex.rgb);
+		float  emitCover = max(o.a, 0.0);          // ビーム形状カバレッジ
+		if (emitCover < ALPHA_EPSILON) discard;
+		float3 emitLin   = ToLinear(emitColor) * max(1.0, emissiveScale);
+
+		if (emitCover >= OPAQUE_CUT) {
+			// 不透明発光: 遮蔽する通常合成（前乗算 α=1 → 完全上書き）。
+			//   MMD パスで描画され深度も書く（23 互換の見た目）。
+			//   result = emitLin + dst·(1-1) = emitLin
+			return float4(emitLin, 1.0);
+		}
+		// 半透明発光: 純加算合成（前乗算 rgb·cov、出力 α=0）。
+		//   MMDTrans パスで描画。深度は書かない。
+		//   result = emitLin·cov + dst   （背景を一切減衰させない）
+		return float4(emitLin * emitCover, 0.0);
+	}
+
+	float inShadow1, inShadow2;
+	CalcAnimeShadow(NoL, inShadow1, inShadow2);
+	if (m.toonFlag == 0 && m.toonTex >= 0) {
+		float toonV = lerp(lerp(TOON_V_LIGHT, TOON_V_SHADOW1, inShadow1),
+		                   TOON_V_SHADOW2, inShadow2);
+		// toon テクスチャによる α 汚染を避けるため rgb のみ乗算
+		float4 toonSamp = Textures[NURI(tidx + m.toonTex)].Sample(ClampSamp, float2(0.0, toonV));
+		o.rgb *= toonSamp.rgb;
+	} else if (m.toonFlag == 1) {
+		float mult = lerp(lerp(1.0, SHADOW1_MULT, inShadow1), SHADOW2_MULT, inShadow2);
+		o.rgb *= mult;
+	}
+
+	if (m.spTex >= 0 && (m.spmode == 1 || m.spmode == 2)) {
+		float4 sptex = Textures[NURI(tidx + m.spTex)].Sample(samp, vso.spuv);
+		sptex.rgb = lerp(m.spmode == 1 ? 1 : 0,
+		                 sptex.rgb * m.sphereMulValue.rgb + m.sphereAddValue.rgb,
+		                 m.sphereAddValue.a + m.sphereMulValue.a);
+		o.rgb = (m.spmode == 1) ? o.rgb * sptex.rgb : o.rgb + sptex.rgb;
+		// スフィアマップによる α 破壊を回避
+		if (m.spmode == 1) {
+			float spAEnable = saturate(m.sphereMulValue.a + m.sphereAddValue.a);
+			o.a *= lerp(1.0, sptex.a, spAEnable);
+		}
+	}
+
+	o.rgb += m.specular * Le * pow(max(1e-6, dot(N, H)), m.shininess);
+
+	// 完全 0 のみ discard、中間 α スナップは行わず階調を維持
+	if (o.a < ALPHA_EPSILON) discard;
+
+	o.rgb = ToLinear(o.rgb);
+	// ── 前乗算アルファ出力 ──────────────────────────────────────
+	//   ブレンドは srcBlend=one。result = (rgb·a) + dst·(1-a) となり、
+	//   ストレートアルファ合成と数学的に等価。通常材質の見た目は不変。
+	o.rgb *= o.a;
+	return o;
+}
+
+	#ifdef YRZ_PASS_MMD
+		// ── MMDパス PS（不透明ピクセルのみ。深度書き込み ON）──
+		//   【ToonAnime_27 修正】発光材質の一律 discard を廃止。
+		//   MMDColor が返す最終α で振り分ける:
+		//     ・不透明発光   → α=1 → ここで描画（深度書き込み・遮蔽あり）
+		//     ・半透明発光   → α=0 → OPAQUE_CUT 未満で discard → MMDTrans へ
+		//     ・非発光半透明 → α<OPAQUE_CUT で discard → MMDTrans へ
+		float4 PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
+		{
+			float ta;
+			float4 c = MMDColor(vso, iFace, vface, ta);
+			// 半透明ピクセルは深度を書かない。MMDTrans パスへ委ねる。
+			// （不透明ピクセルだけが深度バッファに書き込まれる）
+			if (c.a < OPAQUE_CUT) discard;
+			return c;
+		}
+	#elif defined(YRZ_PASS_MMDTrans)
+		// ── MMDTransパス PS（非発光の半透明 ＋ 半透明発光。深度書き込み OFF）──
+		//   深度を書き込まないため、交差した発光プレーンが互いを切り取らず、
+		//   また半透明サーフェスが背後の発光ビームを遮蔽しない。
+		//   前乗算ブレンド (srcBlend=one) が:
+		//     ・半透明     → result = rgb·a + dst·(1-a)  （アルファ合成）
+		//     ・半透明発光 → result = emitLin·cov + dst   （加算合成, α=0出力）
+		//   を同一パスで同時に処理する。
+		//   【ToonAnime_27 修正】不透明発光（α=1）は MMD パスで描画済みの
+		//   ため、「c.a ≥ OPAQUE_CUT なら discard」の単一判定で自然に除外。
+		float4 PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
+		{
+			float ta;
+			float4 c = MMDColor(vso, iFace, vface, ta);
+
+			// 不透明ピクセル（不透明発光含む）は MMD パスで描画済み → 除外。
+			// 半透明発光 (c.a==0) と 非発光の半透明 (c.a<OPAQUE_CUT) のみ描画。
+			if (c.a >= OPAQUE_CUT) discard;
+			return c;
+		}
+	#else
+		// ── GBufferパス出力構造体 ──
+		struct PSO {
+			float4 NormalDepth : SV_TARGET0;
+			float4 GBuffer1    : SV_TARGET1;
+			float2 GBuffer2    : SV_TARGET2;
+		};
+
+		#ifndef NO_BARYCENTRICS
+		PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace, float3 bary:SV_Barycentrics) {
+		#else
+		PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) {
+			float3 bary = 0;
+		#endif
+			PSO o = (PSO)0;
+
+			float texA;
+			float4 c = MMDColor(vso, iFace, vface, texA);
+
+			// GBuffer カリングはテクスチャ単独 α を主基準にする。
+			//   AL 発光材質はアルファ=0 でも GBuffer に書き込む（PPAL の
+			//   Bloom 解析に必要）。
+			{
+				uint   imoG   = ModelIndex;
+				MMDMaterial mG = MMDMaterials[imoG][Faces[imoG][iFace]];
+				bool   isALG  = IsALEmissiveMat(mG);
+				if (!isALG) {
+					if (texA < TEX_ALPHA_CUT) discard;            // PNG α 主基準
+					if (c.a  < AlphaThreshold) discard;            // 合算 α 補助
+				}
+			}
+
+			o.NormalDepth = float4(vso.normal, vso.viewZ);
+			o.GBuffer1.r  = ModelIndex & 0x00FFFFFF;
+			o.GBuffer1.g  = ModelIndex >> 24;
+			o.GBuffer1.b  = iFace & 0x00FFFFFF;
+			o.GBuffer1.a  = iFace >> 24;
+			o.GBuffer2    = bary.yz;
+
+			return o;
+		}
+	#endif
+
+#endif
+
+
+// ============================================================
+// SSAOパス: レイトレーシングによるアンビエントオクルージョン
+// ============================================================
+#ifdef YRZ_PASS_SSAO
+#define RAYTRACING
+
+struct SSAOPayload {
+	float t;
+};
+
+float3 SSAOUVtoWorld(float2 uv, float depth)
+{
+	float2 tex = (uv - 0.5) * 2.0;
+	float3 ray;
+	if (Perspective) {
+		ray = ViewMatrix._13_23_33 / ProjectionMatrix._33
+		    + (ViewMatrix._11_21_31 * tex.x / ProjectionMatrix._11)
+		    - (ViewMatrix._12_22_32 * tex.y / ProjectionMatrix._22);
+	} else {
+		float3 lateral = CameraRight * tex.x / ProjectionMatrix._11
+		               - CameraUp    * tex.y / ProjectionMatrix._22;
+		return CameraPosition + lateral + CameraForward * depth;
+	}
+	return CameraPosition + ray * depth;
+}
+
+[shader("raygeneration")]
+void RayGeneration()
+{
+	uint2  pix = DispatchRaysIndex().xy;
+	float2 uv  = (pix + 0.5) / (float2)DispatchRaysDimensions().xy;
+
+	float4 nd = MyNormalDepth.SampleLevel(PointSamp, uv, 0);
+	if (nd.w == 0.0) { SSAO[pix] = 0.0; return; }
+
+	float3 P = SSAOUVtoWorld(uv, nd.w);
+	float3 N = normalize(nd.xyz);
+	float3x3 TBN = ComputeTBN(N);
+
+	float occlusion = 0.0;
+	[loop]
+	for (int i = 0; i < AO_SAMPLES; i++) {
+		float4 xi = Hash4(uint4(pix.x, pix.y, (uint)(iSample) * (uint)AO_SAMPLES + (uint)i, 7919u));
+		float  pdf;
+		float3 dir = SampleCosWeightedHemisphere(TBN, xi.xy, pdf);
+
+		SSAOPayload payload;
+		payload.t = -1.0;
+
+		RayDesc ray;
+		ray.Origin    = P + N * (nd.w * AO_BIAS);
+		ray.Direction = dir;
+		ray.TMin      = 0.0;
+		ray.TMax      = AO_RADIUS;
+		TraceRay(TLAS, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, 0, 0, 0, ray, payload);
+
+		if (payload.t >= 0.0)
+			occlusion += 1.0 - saturate(payload.t / AO_RADIUS);
+	}
+	occlusion /= (float)AO_SAMPLES;
+
+	float prev  = SSAO[pix].r;
+	float alpha = 1.0 / ((float)iSample + 1.0);
+	SSAO[pix]   = lerp(prev, occlusion, alpha);
+}
+
+[shader("miss")]
+void Miss(inout SSAOPayload payload) { }
+
+[shader("closesthit")]
+void ClosestHit(inout SSAOPayload payload, Attribute attr)
+{
+	payload.t = RayTCurrent();
+}
+
+[shader("anyhit")]
+void AnyHit(inout SSAOPayload payload, Attribute attr) { }
+
+#endif
+
+
+// ============================================================
+// Copyパス: RasterOut → RTOutput & SSAO適用
+//           MyGBuffer1/2/NormalDepth → グローバル GBuffer へ転写
+// ============================================================
+#ifdef YRZ_PASS_Copy
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2  pix   = (uint2)vso.position.xy;
+	float  ao    = SSAO[pix].r;
+	float4 color = RasterOut[pix];
+
+	color.rgb   *= (1.0 - AO_STRENGTH * ao);
+	RTOutput[pix] = color;
+
+	float4 G1 = MyGBuffer1[pix];
+	GBuffer1[pix].r = (G1.r < 0) ? -1 : (uint)G1.r | ((uint)G1.g << 24);
+	GBuffer1[pix].g = (G1.b < 0) ? -1 : (uint)G1.b | ((uint)G1.a << 24);
+	GBuffer2[pix]    = MyGBuffer2[pix];
+	NormalDepth[pix] = MyNormalDepth[pix];
+
+	discard;
+	return 0;
+}
+
+#endif
+
+
+// ============================================================
+// FXAAパス
+// ============================================================
+#ifdef YRZ_PASS_FXAA
+
+struct VSO {
+	float4 position : SV_POSITION;
+	float2 uv       : TEXCOORD;
+};
+VSO VS(float4 pos : POSITION, float2 uv : TEXCOORD)
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float GetLuma(float3 rgb) { return dot(rgb, float3(0.299, 0.587, 0.114)); }
+
+float4 SampleRTO(float2 uv)
+{
+	float2 fCoord = uv * float2(Resolution) - 0.5;
+	int2   iBase  = int2(floor(fCoord));
+	float2 fr     = fCoord - float2(iBase);
+	int2   bound  = int2(Resolution) - 1;
+	float4 tl = RTOutput[clamp(iBase,              int2(0,0), bound)];
+	float4 tr = RTOutput[clamp(iBase + int2(1, 0), int2(0,0), bound)];
+	float4 bl = RTOutput[clamp(iBase + int2(0, 1), int2(0,0), bound)];
+	float4 br = RTOutput[clamp(iBase + int2(1, 1), int2(0,0), bound)];
+	return lerp(lerp(tl, tr, fr.x), lerp(bl, br, fr.x), fr.y);
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2  pix      = (uint2)vso.position.xy;
+	int2   bound    = int2(Resolution) - 1;
+	float2 texelSize = 1.0 / float2(Resolution);
+	float3 rgbNW = RTOutput[clamp(int2(pix) + int2(-1,-1), int2(0,0), bound)].rgb;
+	float3 rgbN  = RTOutput[clamp(int2(pix) + int2( 0,-1), int2(0,0), bound)].rgb;
+	float3 rgbNE = RTOutput[clamp(int2(pix) + int2( 1,-1), int2(0,0), bound)].rgb;
+	float3 rgbW  = RTOutput[clamp(int2(pix) + int2(-1, 0), int2(0,0), bound)].rgb;
+	float3 rgbM  = RTOutput[pix].rgb;
+	float3 rgbE  = RTOutput[clamp(int2(pix) + int2( 1, 0), int2(0,0), bound)].rgb;
+	float3 rgbSW = RTOutput[clamp(int2(pix) + int2(-1, 1), int2(0,0), bound)].rgb;
+	float3 rgbS  = RTOutput[clamp(int2(pix) + int2( 0, 1), int2(0,0), bound)].rgb;
+	float3 rgbSE = RTOutput[clamp(int2(pix) + int2( 1, 1), int2(0,0), bound)].rgb;
+	float lumaNW = GetLuma(rgbNW), lumaN  = GetLuma(rgbN),  lumaNE = GetLuma(rgbNE);
+	float lumaW  = GetLuma(rgbW),  lumaM  = GetLuma(rgbM),  lumaE  = GetLuma(rgbE);
+	float lumaSW = GetLuma(rgbSW), lumaS  = GetLuma(rgbS),  lumaSE = GetLuma(rgbSE);
+	float lumaMin = min(lumaM, min(min(min(lumaNW, lumaN), min(lumaNE, lumaW)),
+	                               min(min(lumaE,  lumaSW), min(lumaS,  lumaSE))));
+	float lumaMax = max(lumaM, max(max(max(lumaNW, lumaN), max(lumaNE, lumaW)),
+	                               max(max(lumaE,  lumaSW), max(lumaS,  lumaSE))));
+	float lumaRange = lumaMax - lumaMin;
+
+	if (lumaRange < max(FXAA_EDGE_THRESHOLD_MIN, lumaMax * FXAA_EDGE_THRESHOLD)) {
+		RTOutput[pix] = float4(rgbM, RTOutput[pix].a);
+		discard; return 0;
+	}
+
+	float lumaAvg = (lumaN + lumaS + lumaW + lumaE) * 0.25
+	              + (lumaNW + lumaNE + lumaSW + lumaSE) * 0.125;
+	float subpixBlend = saturate(abs(lumaAvg - lumaM) / lumaRange);
+	subpixBlend = smoothstep(0.0, 1.0, subpixBlend) * FXAA_SUBPIX_QUALITY;
+
+	float2 dir;
+	dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE)) - 0.5 * (lumaN - lumaS);
+	dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE)) + 0.5 * (lumaW - lumaE);
+	float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * 0.125), 0.0000305);
+	float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+	dir = clamp(dir * rcpDirMin, -FXAA_MAX_SPAN, FXAA_MAX_SPAN) * texelSize;
+	float3 rgbA = 0.5 * (
+		SampleRTO(vso.uv + dir * (1.0/3.0 - 0.5)).rgb +
+		SampleRTO(vso.uv + dir * (2.0/3.0 - 0.5)).rgb);
+	float3 rgbB = rgbA * 0.5 + 0.25 * (
+		SampleRTO(vso.uv + dir * (0.0/3.0 - 0.5)).rgb +
+		SampleRTO(vso.uv + dir * (3.0/3.0 - 0.5)).rgb);
+	float  lumaB    = GetLuma(rgbB);
+	float3 aaResult = (lumaB < lumaMin || lumaB > lumaMax) ? rgbA : rgbB;
+
+	float3 rgbAvg = (rgbNW + rgbN + rgbNE + rgbW + rgbE + rgbSW + rgbS + rgbSE) * 0.125;
+	float3 result = lerp(aaResult, rgbAvg, subpixBlend * 0.25);
+
+	RTOutput[pix] = float4(result, RTOutput[pix].a);
+	discard;
+	return 0;
+}
+
+#endif

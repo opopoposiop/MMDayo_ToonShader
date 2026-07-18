@@ -1,0 +1,875 @@
+#include "../hlsl/resources.hlsli"
+#include "../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+        "category": "render",
+        "textures": [
+            {"name": "ZBuf",         "format": "D32_FLOAT",          "view": "DSV" },
+            {"name": "RasterOut",    "format": "R16G16B16A16_FLOAT",  "view": "RTV" },
+            {"name": "MyNormalDepth","format": "R32G32B32A32_FLOAT",  "view": "RTV" },
+            {"name": "MyGBuffer1",   "format": "R32G32B32A32_FLOAT",  "view": "RTV" },
+            {"name": "MyGBuffer2",   "format": "R32G32_FLOAT",        "view": "RTV" },
+            {"name": "MyEmissive",   "format": "R16G16B16A16_FLOAT",  "view": "RTV" },
+            {"name": "SSAO",         "format": "R8_UNORM",            "view": "UAV" },
+            {"name": "BloomBuf",     "format": "R16G16B16A16_FLOAT",  "view": "UAV" },
+            {"name": "BloomBuf2",    "format": "R16G16B16A16_FLOAT",  "view": "UAV" },
+            {"name": "EmissiveBuf",  "format": "R16G16B16A16_FLOAT",  "view": "UAV" }
+        ],
+        "samplers": [
+            { "name":"samp",      "filter":"ANISOTROPIC" },
+            { "name":"ClampSamp", "filter":"LINEAR",  "addressU":"CLAMP", "addressV":"CLAMP" },
+            { "name":"SkySamp",   "filter":"LINEAR",  "addressU":"WRAP",  "addressV":"CLAMP" },
+            { "name":"PointSamp", "filter":"POINT",   "addressU":"CLAMP", "addressV":"CLAMP" }
+        ],
+        "passes": [
+            {
+                "name":"BG", "type":"postprocess",
+                "pixelShader": "PS", "vertexShader": "VS",
+                "RTV": [ {"name":"RasterOut", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }]
+            },
+            {
+                "name": "GBuffer",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+                "RTV": [
+                    { "name": "MyNormalDepth", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} },
+                    { "name": "MyGBuffer1",    "clear":true, "value":{"x":-1, "y":-1, "z":-1, "w":-1} },
+                    { "name": "MyGBuffer2",    "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} },
+                    { "name": "MyEmissive",    "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }
+                ],
+                "rasterizerDesc": { "cullMode": "none" }
+            },
+            {
+                "name": "Edge",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+                "RTV": [{ "name": "RasterOut", "clear": false }],
+                "blendDesc": {
+                    "renderTarget0": { "blendEnable": false }
+                },
+                "rasterizerDesc": { "cullMode": "front" }
+            },
+            {
+                "name": "MMD",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": false },
+                "RTV": [{ "name": "RasterOut", "clear": false }],
+                "blendDesc": {
+                    "renderTarget0": {
+                        "blendEnable": true,
+                        "srcBlend": "src_alpha", "destBlend": "inv_src_alpha", "blendOp": "add",
+                        "srcBlendAlpha": "one",   "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"
+                    }
+                },
+                "rasterizerDesc": { "cullMode": "none" }
+            },
+            {
+                "name": "SSAO", "type": "raytracing",
+                "raygenShader": "RayGeneration",
+                "missShader":   [ "Miss" ],
+                "hitGroup": [ { "type":"TRIANGLES", "closestHit":"ClosestHit", "anyHit":"AnyHit", "intersection":"" } ],
+                "maxPayloadSize": 4, "maxAttributeSize": 8, "maxRecursionDepth": 1,
+                "UAV": [ {"name":"SSAO"} ]
+            },
+            {
+                "name":"Copy", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS",
+                "UAV": [ {"name":"EmissiveBuf"} ]
+            },
+            {
+                "name": "BloomExtract", "type": "postprocess",
+                "pixelShader": "PS", "vertexShader": "VS",
+                "UAV": [ {"name":"BloomBuf"}, {"name":"EmissiveBuf"} ]
+            },
+            {
+                "name": "BloomBlurH", "type": "postprocess",
+                "pixelShader": "PS", "vertexShader": "VS",
+                "UAV": [ {"name":"BloomBuf"}, {"name":"BloomBuf2"} ]
+            },
+            {
+                "name": "BloomBlurV", "type": "postprocess",
+                "pixelShader": "PS", "vertexShader": "VS",
+                "UAV": [ {"name":"BloomBuf"}, {"name":"BloomBuf2"} ]
+            },
+            {"name":"BloomComposite", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS"},
+            {"name":"DENOISE", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS", "conditions":["DenoiserEnabled"]},
+            {"name":"FXAA",    "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS"}
+        ]
+    }
+}
+[HLSL]
+
+// ToonAnime_13.fxdayo
+// ToonAnime_12.fxdayo をベースに作成
+// 変更点:
+//   - HDR Bloom の発光検出アーキテクチャを刷新（ToonAnime_12から継承）
+//     GBufferラスタライザパスで材質データに直接アクセスし
+//     発光色を MyEmissive(RTV) に書き込む方式
+//
+//   - 発光判定ロジックをサンプルコード参照方式に変更:
+//     旧(AutoLuminous互換): specular ≈ black（≤0.05）かつ shininess ≥ 100 で発光
+//                           発光色 = diffuse + ambient（材質本来の色）
+//     新(specular発光方式): specular が黒でない（>AL_SPEC_THRESHOLD）場合に発光
+//                           発光色 = m.specular.rgb * BLOOM_EMISSIVE_MULT（スペキュラ色直接利用）
+//                           テクスチャがある場合は乗算してより正確な発光色を算出
+//
+//   動作原理:
+//     PMXモデルでスペキュラ色に色を設定した材質が発光する
+//     モーフでスペキュラ色を変化させると発光色も追従する
+//     BLOOM_EMISSIVE_MULT で発光強度を調整（デフォルト 2.0）
+
+// Radeon向け: bindlessテクスチャ添え字をNonUniformResourceIndexで囲う
+#define NURI NonUniformResourceIndex
+
+// ============================================================
+// エッジパラメータ
+// ============================================================
+static const float  EdgeWidth          = 0.002;
+static const float  EdgeAlphaThreshold = 0.9;
+static const float4 EDGE_GRAY          = float4(0.55, 0.55, 0.55, 1.0);
+
+// ============================================================
+// 2段階アニメ影パラメータ
+// ============================================================
+static const float SHADOW1_THRESHOLD = 0.1;
+static const float SHADOW2_THRESHOLD = -0.15;
+static const float SHADOW_SMOOTH     = 0.02;
+static const float SHADOW1_MULT      = 0.65;
+static const float SHADOW2_MULT      = 0.35;
+static const float TOON_V_LIGHT      = 0.1;
+static const float TOON_V_SHADOW1    = 0.5;
+static const float TOON_V_SHADOW2    = 0.9;
+
+// ============================================================
+// SSAOパラメータ
+// ============================================================
+static const float AO_RADIUS   = 5.0;
+static const float AO_BIAS     = 1e-3;
+static const int   AO_SAMPLES  = 4;
+static const float AO_STRENGTH = 0.5;
+
+// ============================================================
+// HDR Bloom / スペキュラ発光パラメータ
+// ============================================================
+//
+//  発光材質設定規則（specular発光方式）:
+//    発光させたい材質  : スペキュラ色を黒以外に設定（任意の色）
+//    発光色            : スペキュラ色 × BLOOM_EMISSIVE_MULT
+//    モーフによる切替  : MMDMaterials[]はモーフ適用後 → 同フレームで自動反映
+//
+//  AL_SPEC_THRESHOLD  : スペキュラ色の「黒」判定しきい値
+//                       この値を超えたスペキュラ色を発光と見なす
+//  BLOOM_EMISSIVE_MULT: 発光色倍率（specular.rgb に乗算する係数）
+//                       2.0 = サンプルコード参照のデフォルト値
+//  BLOOM_INTENSITY    : BloomCompositeでの RTOutput への加算強度
+//  BLOOM_SIGMA        : ガウスぼかしのσ（ピクセル単位）
+//  BLOOM_RADIUS       : ブラーカーネル半径（タップ数 = 2*RADIUS+1 = 11tap）
+static const float AL_SPEC_THRESHOLD  = 0.05;
+static const float BLOOM_EMISSIVE_MULT = 2.0;
+static const float BLOOM_INTENSITY    = 0.40;
+static const float BLOOM_SIGMA        = 2.5;
+static const int   BLOOM_RADIUS       = 5;
+
+// ============================================================
+// FXAA高品質版パラメータ
+// ============================================================
+static const float FXAA_EDGE_THRESHOLD     = 0.063;
+static const float FXAA_EDGE_THRESHOLD_MIN = 0.0312;
+static const float FXAA_SUBPIX_QUALITY     = 0.75;
+static const float FXAA_MAX_SPAN           = 12.0;
+
+
+// ============================================================
+// BGパス: スカイボックス描画
+// ============================================================
+#ifdef YRZ_PASS_BG
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+void RaySaySay(float2 Tex, out float3 ray, out float3 pos, uniform bool normalizeFlag = true)
+{
+	float2 tex = (Tex.xy - 0.5) * 2.0;
+	if (Perspective) {
+		ray =
+			ViewMatrix._13_23_33 / ProjectionMatrix._33
+			+ (ViewMatrix._11_21_31 * tex.x / ProjectionMatrix._11)
+			- (ViewMatrix._12_22_32 * tex.y / ProjectionMatrix._22);
+		if (normalizeFlag)
+			ray = normalize(ray);
+		pos = CameraPosition;
+	} else {
+		ray = CameraForward;
+		pos = CameraPosition + CameraRight * tex.x / ProjectionMatrix._11 - CameraUp * tex.y / ProjectionMatrix._22;
+	}
+}
+
+static float SkyboxPhi = 0;
+
+float2 LongRat(float3 v)
+{
+	return float2(atan2(v.z, v.x), acos(v.y)) / float2(-2 * PI, PI) - float2(0.25 + SkyboxPhi, 0);
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 o = 0;
+	float3 rd, ro;
+	RaySaySay(vso.uv, rd, ro);
+	float2 uv = LongRat(rd);
+	o = Skybox.SampleLevel(SkySamp, uv, 0);
+	return float4(o.rgb, 0);
+}
+#endif
+
+
+// ============================================================
+// Edgeパス: 外形(シルエット)エッジ描画
+//   edgeSize >= 1.0 → m.edgeColor  /  edgeSize < 1.0 → EDGE_GRAY
+// ============================================================
+#ifdef YRZ_PASS_Edge
+struct VSO {
+	float4 position:SV_POSITION;
+};
+
+VSO VS( float4 pos : POSITION, float3 normal:NORMAL, float3 tangent:TANGENT, float2 uv:TEXCOORD )
+{
+	VSO o = (VSO)0;
+	float4 clipPos = mul(pos, ViewProjectionMatrix);
+
+	float3 viewNormal = mul(normal, (float3x3)ViewMatrix);
+	float2 dir = viewNormal.xy;
+
+	float len = length(dir);
+	if (len < 1e-5) dir = float2(1, 0);
+	else            dir /= len;
+
+	clipPos.xy += dir * EdgeWidth * clipPos.w;
+	o.position = clipPos;
+	return o;
+}
+
+float4 PS(VSO vso, uint iFace:SV_PrimitiveID) : SV_TARGET
+{
+	uint imo = ModelIndex;
+	MMDMaterial m = MMDMaterials[imo][Faces[imo][iFace]];
+	if (m.diffuse.a < EdgeAlphaThreshold) discard;
+	return (m.edgeSize >= 1.0) ? m.edgeColor : EDGE_GRAY;
+}
+#endif
+
+
+// ============================================================
+// MMDパス & GBufferパス: 2段階アニメ調トゥーンシェーディング
+//
+//  GBufferパスでは通常の3出力に加え、第4出力 MyEmissive(SV_TARGET3) に
+//  AutoLuminous発光色を書き込む。
+//  ラスタライザパスなので MMDMaterials / TextureTable / Textures / vso.uv に
+//  直接アクセスでき、IB/VB の間接参照なしに確実な発光検出が行える。
+// ============================================================
+#if defined(YRZ_PASS_MMD) || defined(YRZ_PASS_GBuffer)
+struct VSO {
+	float4 position:SV_POSITION;
+	float3 normal:NORMAL;
+	float2 uv:TEXCOORD;
+	float2 spuv:TEXCOORD1;
+	float3 eye:TEXCOORD2;
+};
+
+VSO VS( float4 pos : POSITION, float3 normal:NORMAL, float3 tangent:TANGENT, float2 uv:TEXCOORD )
+{
+	VSO o = (VSO)0;
+	o.position = mul(pos, ViewProjectionMatrix);
+	o.uv       = uv;
+	o.spuv     = mul(normal, (float3x2)ViewMatrix) * float2(0.5, -0.5) + 0.5;
+	o.normal   = normal;
+	o.eye      = CameraPosition - pos.xyz;
+	return o;
+}
+
+void CalcAnimeShadow(float NoL, out float inShadow1, out float inShadow2)
+{
+	inShadow1 = 1.0 - smoothstep(SHADOW1_THRESHOLD - SHADOW_SMOOTH,
+	                              SHADOW1_THRESHOLD + SHADOW_SMOOTH, NoL);
+	inShadow2 = 1.0 - smoothstep(SHADOW2_THRESHOLD - SHADOW_SMOOTH,
+	                              SHADOW2_THRESHOLD + SHADOW_SMOOTH, NoL);
+}
+
+float4 MMDColor(VSO vso, uint iFace, bool vface)
+{
+	uint imo = ModelIndex;
+	MMDMaterial m = MMDMaterials[imo][Faces[imo][iFace]];
+
+	if (!vface && ((m.drawFlag & 1) == 0)) discard;
+
+	float3 Le  = LightColor;
+	float3 L   = -LightDirection;
+	float3 N   = vso.normal;
+	float3 V   = normalize(vso.eye);
+	float3 H   = normalize(L + V);
+	float  NoL = dot(N, L);
+	uint  tidx = TextureTable[imo];
+
+	float4 tex = 1;
+	if (m.tex >= 0) {
+		tex = Textures[NURI(tidx + m.tex)].Sample(samp, vso.uv);
+		tex.rgb = lerp(1, tex.rgb * m.textureMulValue.rgb + m.textureAddValue.rgb,
+		               m.textureMulValue.a + m.textureAddValue.a);
+	}
+
+	float4 o = float4(saturate(m.diffuse.rgb * Le + m.ambient), m.diffuse.a) * tex;
+
+	float inShadow1, inShadow2;
+	CalcAnimeShadow(NoL, inShadow1, inShadow2);
+
+	if (m.toonFlag == 0 && m.toonTex >= 0) {
+		float toonV = lerp(lerp(TOON_V_LIGHT, TOON_V_SHADOW1, inShadow1),
+		                   TOON_V_SHADOW2, inShadow2);
+		o *= Textures[NURI(tidx + m.toonTex)].Sample(ClampSamp, float2(0.0, toonV));
+	} else if (m.toonFlag == 1) {
+		float mult = lerp(lerp(1.0, SHADOW1_MULT, inShadow1), SHADOW2_MULT, inShadow2);
+		o.rgb *= mult;
+	}
+
+	if (m.spTex >= 0 && (m.spmode == 1 || m.spmode == 2)) {
+		float4 sptex = Textures[NURI(tidx + m.spTex)].Sample(samp, vso.spuv);
+		sptex.rgb = lerp(m.spmode == 1 ? 1 : 0,
+		                 sptex.rgb * m.sphereMulValue.rgb + m.sphereAddValue.rgb,
+		                 m.sphereAddValue.a + m.sphereMulValue.a);
+		o.rgb = (m.spmode == 1) ? o.rgb * sptex.rgb : o.rgb + sptex.rgb;
+		o.a  *= sptex.a;
+	}
+
+	o.rgb += m.specular * Le * pow(max(1e-6, dot(N, H)), m.shininess);
+
+	if (o.a == 0) discard;
+	if (o.a >= 0.98) o.a = 1;
+
+	o.rgb = ToLinear(o.rgb);
+	return o;
+}
+
+// ──────────────────────────────────────────────────────────────
+// スペキュラ発光色計算ヘルパー
+//
+//  ラスタライザパスから呼ばれるため、材質データ・UV・テクスチャに
+//  直接アクセスできる（IB/VBの間接参照が不要）。
+//
+//  発光判定: スペキュラ色が黒でない（最大成分 > AL_SPEC_THRESHOLD）
+//  発光色  : m.specular.rgb * BLOOM_EMISSIVE_MULT
+//            テクスチャがある場合はテクスチャ色を乗算
+//
+//  入力:
+//    imo   = ModelIndex（描画中のモデル番号）
+//    iFace = SV_PrimitiveID（面番号）
+//    uv    = テクスチャUV（VSから補間済み）
+//  出力:
+//    リニア空間の発光色（BLOOM_EMISSIVE_MULTスケール済み）
+//    非発光材質の場合は float3(0,0,0)
+// ──────────────────────────────────────────────────────────────
+float3 CalcAutoLuminous(uint imo, uint iFace, float2 uv)
+{
+	MMDMaterial m = MMDMaterials[imo][Faces[imo][iFace]];
+
+	// 発光判定: スペキュラ色が黒でない（AL_SPEC_THRESHOLD超え）
+	//   スペキュラ色に色が設定されている材質を発光と見なす
+	//   モーフでスペキュラ色を変化させると自動的に反映される
+	float specMax    = max(m.specular.r, max(m.specular.g, m.specular.b));
+	bool  isEmissive = (specMax > AL_SPEC_THRESHOLD);
+
+	if (!isEmissive)
+		return 0;
+
+	// 発光色: スペキュラ色 × BLOOM_EMISSIVE_MULT（サンプルコード参照）
+	// m.specular はガンマ空間で格納されているため ToLinear で変換する
+	float3 glowBase = m.specular.rgb * BLOOM_EMISSIVE_MULT;
+
+	// テクスチャ適用（スペキュラ色にテクスチャの色を乗算）
+	uint tidx = TextureTable[imo];
+	if (m.tex >= 0) {
+		float4 texCol = Textures[NURI(tidx + m.tex)].Sample(samp, uv);
+		texCol.rgb = lerp(1.0,
+		                  texCol.rgb * m.textureMulValue.rgb + m.textureAddValue.rgb,
+		                  m.textureMulValue.a + m.textureAddValue.a);
+		glowBase *= texCol.rgb;
+	}
+
+	// ガンマ→リニア変換（HDRブルームはリニア空間で処理）
+	return ToLinear(saturate(glowBase));
+}
+
+	#ifdef YRZ_PASS_MMD
+		float4 PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
+		{
+			return MMDColor(vso, iFace, vface);
+		}
+	#else
+		// ── GBufferパス出力構造体 ──────────────────────────────────
+		// SV_TARGET3 に MyEmissive(発光色バッファ) を追加
+		struct PSO {
+			float4 NormalDepth : SV_TARGET0;  // 法線(rgb) + クリップ空間W深度(a)
+			float4 GBuffer1    : SV_TARGET1;  // ModelIndex + iFace（ビット圧縮）
+			float2 GBuffer2    : SV_TARGET2;  // 重心座標 .yz
+			float4 Emissive    : SV_TARGET3;  // スペキュラ発光色（ブルーム用）
+		};
+
+		#ifndef NO_BARYCENTRICS
+		PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace, float3 bary:SV_Barycentrics) {
+		#else
+		PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) {
+			float3 bary = 0;
+		#endif
+			float4 c = MMDColor(vso, iFace, vface);
+			if (c.a < AlphaThreshold) discard;
+
+			PSO o = (PSO)0;
+			o.NormalDepth = float4(vso.normal, vso.position.w);
+			o.GBuffer1.r  = ModelIndex & 0x00FFFFFF;
+			o.GBuffer1.g  = ModelIndex >> 24;
+			o.GBuffer1.b  = iFace & 0x00FFFFFF;
+			o.GBuffer1.a  = iFace >> 24;
+			o.GBuffer2    = bary.yz;
+
+			// ── スペキュラ発光色をGBufferに出力 ──────────────────
+			// ラスタライザパスなので材質データ・UV・テクスチャに直接アクセス可能
+			// 発光条件: specular > AL_SPEC_THRESHOLD
+			// 発光色: m.specular.rgb * BLOOM_EMISSIVE_MULT（テクスチャ乗算あり）
+			// BloomExtractパスはEmissiveBuf経由でこの値を読み取る
+			float3 emissive = CalcAutoLuminous(ModelIndex, iFace, vso.uv);
+			o.Emissive = float4(emissive, 1.0);
+
+			return o;
+		}
+	#endif
+
+#endif
+
+
+// ============================================================
+// SSAOパス: レイトレーシングによるアンビエントオクルージョン
+// ============================================================
+#ifdef YRZ_PASS_SSAO
+#define RAYTRACING
+
+struct SSAOPayload {
+	float t;
+};
+
+float3 SSAOUVtoWorld(float2 uv, float depth)
+{
+	float2 tex = (uv - 0.5) * 2.0;
+	float3 ray;
+	if (Perspective) {
+		ray = ViewMatrix._13_23_33 / ProjectionMatrix._33
+		    + (ViewMatrix._11_21_31 *  tex.x / ProjectionMatrix._11)
+		    - (ViewMatrix._12_22_32 *  tex.y / ProjectionMatrix._22);
+	} else {
+		float3 lateral = CameraRight * tex.x / ProjectionMatrix._11
+		               - CameraUp    * tex.y / ProjectionMatrix._22;
+		return CameraPosition + lateral + CameraForward * depth;
+	}
+	return CameraPosition + ray * depth;
+}
+
+[shader("raygeneration")]
+void RayGeneration()
+{
+	uint2  pix = DispatchRaysIndex().xy;
+	float2 uv  = (pix + 0.5) / (float2)DispatchRaysDimensions().xy;
+
+	float4 nd = MyNormalDepth.SampleLevel(PointSamp, uv, 0);
+	if (nd.w == 0.0) { SSAO[pix] = 0.0; return; }
+
+	float3 P = SSAOUVtoWorld(uv, nd.w);
+	float3 N = normalize(nd.xyz);
+	float3x3 TBN = ComputeTBN(N);
+
+	float occlusion = 0.0;
+	[loop]
+	for (int i = 0; i < AO_SAMPLES; i++) {
+		float4 xi = Hash4(uint4(pix.x, pix.y, (uint)(iSample) * (uint)AO_SAMPLES + (uint)i, 7919u));
+		float  pdf;
+		float3 dir = SampleCosWeightedHemisphere(TBN, xi.xy, pdf);
+
+		SSAOPayload payload;
+		payload.t = -1.0;
+
+		RayDesc ray;
+		ray.Origin    = P + N * (nd.w * AO_BIAS);
+		ray.Direction = dir;
+		ray.TMin      = 0.0;
+		ray.TMax      = AO_RADIUS;
+		TraceRay(TLAS, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, 0, 0, 0, ray, payload);
+
+		if (payload.t >= 0.0)
+			occlusion += 1.0 - saturate(payload.t / AO_RADIUS);
+	}
+	occlusion /= (float)AO_SAMPLES;
+
+	float prev  = SSAO[pix].r;
+	float alpha = 1.0 / ((float)iSample + 1.0);
+	SSAO[pix]   = lerp(prev, occlusion, alpha);
+}
+
+[shader("miss")]
+void Miss(inout SSAOPayload payload) { }
+
+[shader("closesthit")]
+void ClosestHit(inout SSAOPayload payload, Attribute attr)
+{
+	payload.t = RayTCurrent();
+}
+
+[shader("anyhit")]
+void AnyHit(inout SSAOPayload payload, Attribute attr) { }
+
+#endif
+
+
+// ============================================================
+// Copyパス: RasterOut → RTOutput コピー & SSAO適用 & 発光バッファ転送
+//
+//  新規: MyEmissive(RTV) → EmissiveBuf(UAV) へ変換コピーを追加
+//  ラスタライザパスのRTV出力はポストプロセス/レイトレーシングパスで
+//  直接UAVとして使えないため、このパスでUAV版に変換する
+// ============================================================
+#ifdef YRZ_PASS_Copy
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2  pix   = trunc(vso.position.xy);
+	float  ao    = SSAO[pix].r;
+	float4 color = RasterOut[pix];
+	color.rgb   *= (1.0 - AO_STRENGTH * ao);
+	RTOutput[pix] = color;
+
+	float4 G1 = MyGBuffer1[pix];
+	GBuffer1[pix].r = (G1.r < 0) ? -1 : (uint)G1.r | ((uint)G1.g << 24);
+	GBuffer1[pix].g = (G1.b < 0) ? -1 : (uint)G1.b | ((uint)G1.a << 24);
+	GBuffer2[pix]    = MyGBuffer2[pix];
+	NormalDepth[pix] = MyNormalDepth[pix];
+
+	// GBufferパスが計算した発光色を UAV バッファへ転送
+	// BloomExtractパスはここで変換された EmissiveBuf を読み取る
+	EmissiveBuf[pix] = MyEmissive[pix];
+
+	discard;
+	return 0;
+}
+
+#endif
+
+
+// ============================================================
+// BloomExtractパス: EmissiveBuf → BloomBuf（単純コピー）
+//
+//  発光色の計算はGBufferラスタライザパスで完結しているため
+//  このパスは EmissiveBuf の内容を BloomBuf に転送するだけでよい。
+//  ToonAnime_12 の複雑なIB/VB間接参照は不要になった。
+//
+//  BloomBuf はこのあと BloomBlurH → BloomBlurV でガウスぼかしされ
+//  BloomComposite で RTOutput に加算合成される。
+// ============================================================
+#ifdef YRZ_PASS_BloomExtract
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2 pix = trunc(vso.position.xy);
+	// GBufferパスで計算済みの発光色をそのまま BloomBuf に転送
+	BloomBuf[pix] = EmissiveBuf[pix];
+	discard;
+	return 0;
+}
+
+#endif
+
+
+// ============================================================
+// BloomBlurHパス: 水平ガウスぼかし（BloomBuf → BloomBuf2）
+// ============================================================
+#ifdef YRZ_PASS_BloomBlurH
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float GaussW(float x) { return exp(-x * x / (2.0 * BLOOM_SIGMA * BLOOM_SIGMA)); }
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2 pix   = trunc(vso.position.xy);
+	int2  bound = int2(Resolution) - 1;
+	float3 result = 0.0;
+	float  totalW = 0.0;
+
+	[unroll]
+	for (int i = -BLOOM_RADIUS; i <= BLOOM_RADIUS; i++) {
+		float w   = GaussW((float)i);
+		int2  src = clamp(int2(pix) + int2(i, 0), int2(0, 0), bound);
+		result   += BloomBuf[src].rgb * w;
+		totalW   += w;
+	}
+
+	BloomBuf2[pix] = float4(result / totalW, 1.0);
+	discard;
+	return 0;
+}
+
+#endif
+
+
+// ============================================================
+// BloomBlurVパス: 垂直ガウスぼかし（BloomBuf2 → BloomBuf）
+// ============================================================
+#ifdef YRZ_PASS_BloomBlurV
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float GaussW(float x) { return exp(-x * x / (2.0 * BLOOM_SIGMA * BLOOM_SIGMA)); }
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2 pix   = trunc(vso.position.xy);
+	int2  bound = int2(Resolution) - 1;
+	float3 result = 0.0;
+	float  totalW = 0.0;
+
+	[unroll]
+	for (int i = -BLOOM_RADIUS; i <= BLOOM_RADIUS; i++) {
+		float w   = GaussW((float)i);
+		int2  src = clamp(int2(pix) + int2(0, i), int2(0, 0), bound);
+		result   += BloomBuf2[src].rgb * w;
+		totalW   += w;
+	}
+
+	BloomBuf[pix] = float4(result / totalW, 1.0);
+	discard;
+	return 0;
+}
+
+#endif
+
+
+// ============================================================
+// BloomCompositeパス: ブルームを RTOutput に加算合成
+// ============================================================
+#ifdef YRZ_PASS_BloomComposite
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2  pix   = trunc(vso.position.xy);
+	float3 bloom = BloomBuf[pix].rgb;
+	RTOutput[pix] += float4(bloom * BLOOM_INTENSITY, 0.0);
+	discard;
+	return 0;
+}
+
+#endif
+
+
+// ============================================================
+// DENOISEパス
+// ============================================================
+#ifdef YRZ_PASS_DENOISE
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2 pix = trunc(vso.position);
+	uint  idx = pix.y * Resolution.x + pix.x;
+	OIDNBuf[idx].color  = RTOutput[pix.xy].xyz;
+	OIDNBuf[idx].albedo = RTOutput[pix.xy].xyz;
+	OIDNBuf[idx].normal = float3(0, 0, 1);
+	discard;
+	return 0;
+}
+#endif
+
+
+// ============================================================
+// FXAAパス（高品質版）
+//   入力: RTOutput（SSAO + Bloom 合成済み）を手動バイリニアで読み取り
+//   出力: RTOutput（AA結果を上書き）
+// ============================================================
+#ifdef YRZ_PASS_FXAA
+
+struct VSO {
+	float4 position : SV_POSITION;
+	float2 uv       : TEXCOORD;
+};
+
+VSO VS(float4 pos : POSITION, float2 uv : TEXCOORD)
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float GetLuma(float3 rgb) { return dot(rgb, float3(0.299, 0.587, 0.114)); }
+
+float4 SampleRTO(float2 uv)
+{
+	float2 fCoord = uv * float2(Resolution) - 0.5;
+	int2   iBase  = int2(floor(fCoord));
+	float2 fr     = fCoord - float2(iBase);
+	int2   bound  = int2(Resolution) - 1;
+	float4 tl = RTOutput[clamp(iBase,              int2(0,0), bound)];
+	float4 tr = RTOutput[clamp(iBase + int2(1, 0), int2(0,0), bound)];
+	float4 bl = RTOutput[clamp(iBase + int2(0, 1), int2(0,0), bound)];
+	float4 br = RTOutput[clamp(iBase + int2(1, 1), int2(0,0), bound)];
+	return lerp(lerp(tl, tr, fr.x), lerp(bl, br, fr.x), fr.y);
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2  pix      = trunc(vso.position.xy);
+	int2   bound    = int2(Resolution) - 1;
+	float2 texelSize = 1.0 / float2(Resolution);
+
+	float3 rgbNW = RTOutput[clamp(int2(pix) + int2(-1,-1), int2(0,0), bound)].rgb;
+	float3 rgbN  = RTOutput[clamp(int2(pix) + int2( 0,-1), int2(0,0), bound)].rgb;
+	float3 rgbNE = RTOutput[clamp(int2(pix) + int2( 1,-1), int2(0,0), bound)].rgb;
+	float3 rgbW  = RTOutput[clamp(int2(pix) + int2(-1, 0), int2(0,0), bound)].rgb;
+	float3 rgbM  = RTOutput[pix].rgb;
+	float3 rgbE  = RTOutput[clamp(int2(pix) + int2( 1, 0), int2(0,0), bound)].rgb;
+	float3 rgbSW = RTOutput[clamp(int2(pix) + int2(-1, 1), int2(0,0), bound)].rgb;
+	float3 rgbS  = RTOutput[clamp(int2(pix) + int2( 0, 1), int2(0,0), bound)].rgb;
+	float3 rgbSE = RTOutput[clamp(int2(pix) + int2( 1, 1), int2(0,0), bound)].rgb;
+
+	float lumaNW = GetLuma(rgbNW), lumaN  = GetLuma(rgbN),  lumaNE = GetLuma(rgbNE);
+	float lumaW  = GetLuma(rgbW),  lumaM  = GetLuma(rgbM),  lumaE  = GetLuma(rgbE);
+	float lumaSW = GetLuma(rgbSW), lumaS  = GetLuma(rgbS),  lumaSE = GetLuma(rgbSE);
+
+	float lumaMin = min(lumaM, min(min(min(lumaNW, lumaN), min(lumaNE, lumaW)),
+	                               min(min(lumaE,  lumaSW), min(lumaS,  lumaSE))));
+	float lumaMax = max(lumaM, max(max(max(lumaNW, lumaN), max(lumaNE, lumaW)),
+	                               max(max(lumaE,  lumaSW), max(lumaS,  lumaSE))));
+	float lumaRange = lumaMax - lumaMin;
+
+	if (lumaRange < max(FXAA_EDGE_THRESHOLD_MIN, lumaMax * FXAA_EDGE_THRESHOLD)) {
+		RTOutput[pix] = float4(rgbM, RTOutput[pix].a);
+		discard; return 0;
+	}
+
+	float lumaAvg = (lumaN + lumaS + lumaW + lumaE) * 0.25
+	              + (lumaNW + lumaNE + lumaSW + lumaSE) * 0.125;
+	float subpixBlend = saturate(abs(lumaAvg - lumaM) / lumaRange);
+	subpixBlend = smoothstep(0.0, 1.0, subpixBlend) * FXAA_SUBPIX_QUALITY;
+
+	float2 dir;
+	dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE)) - 0.5 * (lumaN - lumaS);
+	dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE)) + 0.5 * (lumaW - lumaE);
+
+	float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * 0.125), 0.0000305);
+	float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+	dir = clamp(dir * rcpDirMin, -FXAA_MAX_SPAN, FXAA_MAX_SPAN) * texelSize;
+
+	float3 rgbA = 0.5 * (
+		SampleRTO(vso.uv + dir * (1.0/3.0 - 0.5)).rgb +
+		SampleRTO(vso.uv + dir * (2.0/3.0 - 0.5)).rgb);
+	float3 rgbB = rgbA * 0.5 + 0.25 * (
+		SampleRTO(vso.uv + dir * (0.0/3.0 - 0.5)).rgb +
+		SampleRTO(vso.uv + dir * (3.0/3.0 - 0.5)).rgb);
+
+	float  lumaB    = GetLuma(rgbB);
+	float3 aaResult = (lumaB < lumaMin || lumaB > lumaMax) ? rgbA : rgbB;
+
+	float3 rgbAvg = (rgbNW + rgbN + rgbNE + rgbW + rgbE + rgbSW + rgbS + rgbSE) * 0.125;
+	float3 result = lerp(aaResult, rgbAvg, subpixBlend * 0.25);
+
+	RTOutput[pix] = float4(result, RTOutput[pix].a);
+	discard;
+	return 0;
+}
+#endif

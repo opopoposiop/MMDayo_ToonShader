@@ -1,0 +1,1115 @@
+// ToonAnime_mob_01.fxdayo
+// ToonAnime_21 + MikuMikuMob 群衆描画統合レンダラ
+//
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ToonAnime_21.fxdayo をベースに、S_N_Fes_mob_検証レポート.md で
+// 示された MikuMikuMob (DirectX9/vs_3_0) → DirectX12 移植を
+// レンダラパス内に統合したもの。
+//
+// 【追加パス（MMDパスの直後に実行）】
+//
+//   ClearMobColor [clearUAV]
+//     MobColorBuf (画面サイズ UAV) を透明黒でリセット。
+//
+//   TileClear [compute]
+//     TileBuf のカウント列（列0）を全タイル分 0 にリセット。
+//
+//   MobSetup [compute]
+//     S_N_Fes_mob.pmx の骨・モーフ値を Controllers 経由で取得し、
+//     配置情報テクスチャ MMMob_S_N_Fes_mob.png からビルボードの
+//     ワールド座標を復元。スクリーン座標・深度・フォグ係数を
+//     BillboardDataBuf (UAV) に書き出す。
+//
+//   MobTileBuild [compute]
+//     BillboardDataBuf を参照して各ビルボードが画面のどのタイルと
+//     重なるかを判定し、TileBuf に InterlockedAdd で登録。
+//
+//   MobRender [compute]
+//     スレッドグループ1個 = 画面1タイル (16×16 px)。
+//     グループ共有メモリにタイルのビルボードリストを読み込み、
+//     各ピクセルについて深度テスト (MyNormalDepth.w 参照)・
+//     スプライトサンプリング・高さフォグを適用して MobColorBuf に書き込む。
+//
+// 【Copyパスの変更】
+//   元の SSAO 合成 + GBuffer 転写に加えて、MobColorBuf を RasterOut の
+//   上にアルファブレンドしてから RTOutput に書き出す。
+//
+// 【ファイル配置】
+//   <シーンフォルダ>/
+//     ToonAnime_mob_01.fxdayo     ← このファイル
+//     S_N_Fes_mob.pmx             ← 群衆コントロール PMX（シーンに配置）
+//     MMMob_S_N_Fes_mob.png       ← 群衆配置情報テクスチャ (32×512 px)
+//     S_N_Fes_mob_sprite.png      ← キャラクタースプライト (1024×1024 推奨)
+//
+// 【S_N_Fes_mob.pmx に必要なモーフ・ボーン一覧】
+//   センター(ボーン)、揺ランダム、X振幅、X周波数、X位相、
+//   Y振幅、Y周波数、Y位相、Z振幅、Z周波数、Z位相、
+//   フォグBottom(ボーン)、フォグTop(ボーン)
+//
+// 【GPU 動作確認】
+//   NVIDIA GeForce RTX 2060 (DirectX 12 / SM 6.5 / DXR Tier 1) ✓
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#include "../hlsl/resources.hlsli"
+#include "../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+// ============================================================
+// MikuMikuMob 元パラメータ (S_N_Fes_mob.fx から移植)
+// ============================================================
+#define MOB_MODEL_COUNT         15      // 種モデル数
+#define MOB_BOARD_COUNT         607     // 1オブジェクトあたりのボード数
+#define MOB_TOTAL_BOARDS        9105    // 全ビルボード数 (MOB_MODEL_COUNT * MOB_BOARD_COUNT)
+#define MOB_REPERT_COUNT        1       // 多重複製数（通常1）
+#define MOB_TEX_WIDTH           32      // 配置テクスチャピクセル幅
+#define MOB_TEX_HEIGHT          512     // 配置テクスチャピクセル高さ
+#define MOB_TEX_WIDTH8          256     // MOB_TEX_WIDTH × 8 (ColorToFloat のストライド)
+#define MOB_BOARD_SIZE          23.63   // ビルボードサイズ [MMD 単位]
+#define MOB_BOARD_CENTER_Y      11.87   // ビルボード中心の Y オフセット [MMD 単位]
+#define MOB_INIT_CENTER_Y       10.00   // センターボーン初期高さ [MMD 単位]
+
+// ============================================================
+// レンダリング定数
+// ============================================================
+#define MOB_TILE_SIZE           32      // タイルサイズ [px]  ※16だとheight=32640がD3D12上限16384超え
+#define MOB_MAX_BILLS_PER_TILE  64      // タイルあたりの最大ビルボード数
+#define MOB_MAX_TILE_X          120     // タイル最大列数 (4K 3840 / 32)
+#define MOB_MAX_TILE_Y          68      // タイル最大行数 (4K 2160 / 32)
+#define MOB_MAX_TILES           8160    // MOB_MAX_TILE_X * MOB_MAX_TILE_Y (< D3D12上限16384)
+#define MOB_MAX_PIXEL_R         128.0   // スクリーン上の最大ビルボード半径 [px]
+#define MOB_MIN_PIXEL_R         1.5     // スクリーン上の最小ビルボード半径 [px]
+#define MOB_ALPHA_CUTOFF        0.05    // ビルボードのアルファカットオフ閾値
+
+// ============================================================
+// BillboardDataBuf レイアウト (float4 × 2 per billboard)
+// ============================================================
+// Row 0 (y=0): float4(screenX, screenY, screenRadius, viewZ)
+// Row 1 (y=1): float4(fogFactor, float(modelIdx), 0, 0)
+#define MOB_BD_ROW_POS   0
+#define MOB_BD_ROW_MISC  1
+
+// ============================================================
+// 高さフォグ色 (S_N_Fes_mob.fx の FogColor と同値)
+// ============================================================
+static const float3 MOB_FOG_COLOR = float3(0.0, 0.0, 0.0);
+
+//=======================================================
+// JSON 定義
+//=======================================================
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+        "category": "render",
+
+        // ─── Controllers: S_N_Fes_mob.pmx のモーフ・ボーン値 ───
+        "controllers": [
+            // センターボーン位置（ビルボード追従基準）
+            { "name":"C_Center",   "controllerName":"S_N_Fes_mob.pmx", "item":"センター",    "type":"float3" },
+            // ランダム揺れ制御
+            { "name":"C_RandMove", "controllerName":"S_N_Fes_mob.pmx", "item":"揺ランダム",  "type":"float" },
+            // X 方向揺れ
+            { "name":"C_XAmp",     "controllerName":"S_N_Fes_mob.pmx", "item":"X振幅",      "type":"float" },
+            { "name":"C_XFreq",    "controllerName":"S_N_Fes_mob.pmx", "item":"X周波数",    "type":"float" },
+            { "name":"C_XPhase",   "controllerName":"S_N_Fes_mob.pmx", "item":"X位相",      "type":"float" },
+            // Y 方向揺れ（ジャンプ型）
+            { "name":"C_YAmp",     "controllerName":"S_N_Fes_mob.pmx", "item":"Y振幅",      "type":"float" },
+            { "name":"C_YFreq",    "controllerName":"S_N_Fes_mob.pmx", "item":"Y周波数",    "type":"float" },
+            { "name":"C_YPhase",   "controllerName":"S_N_Fes_mob.pmx", "item":"Y位相",      "type":"float" },
+            // Z 方向揺れ
+            { "name":"C_ZAmp",     "controllerName":"S_N_Fes_mob.pmx", "item":"Z振幅",      "type":"float" },
+            { "name":"C_ZFreq",    "controllerName":"S_N_Fes_mob.pmx", "item":"Z周波数",    "type":"float" },
+            { "name":"C_ZPhase",   "controllerName":"S_N_Fes_mob.pmx", "item":"Z位相",      "type":"float" },
+            // 高さフォグ（ボーン Y 座標をフォグ上下限として使用）
+            { "name":"C_FogBottom","controllerName":"S_N_Fes_mob.pmx", "item":"フォグBottom","type":"float3" },
+            { "name":"C_FogTop",   "controllerName":"S_N_Fes_mob.pmx", "item":"フォグTop",   "type":"float3" }
+        ],
+
+        // ─── Textures ───
+        "textures": [
+            // ── ToonAnime_21 オリジナル ──
+            {"name": "ZBuf",         "format": "D32_FLOAT",          "view": "DSV" },
+            {"name": "RasterOut",    "format": "R16G16B16A16_FLOAT",  "view": "RTV" },
+            {"name": "MyNormalDepth","format": "R32G32B32A32_FLOAT",  "view": "RTV" },
+            {"name": "MyGBuffer1",   "format": "R32G32B32A32_FLOAT",  "view": "RTV" },
+            {"name": "MyGBuffer2",   "format": "R32G32_FLOAT",        "view": "RTV" },
+            {"name": "SSAO",         "format": "R8_UNORM",            "view": "UAV" },
+            // ── 群衆描画用テクスチャ ──
+            // 配置情報テクスチャ (32×512 px, MMMob エンコード形式)
+            { "name":"ArrangeTex",      "filename":"MMMob_S_N_Fes_mob.png" },
+            // キャラクタースプライトテクスチャ（事前に用意すること）
+            { "name":"SpriteTex",       "filename":"S_N_Fes_mob_sprite.png" },
+            // ビルボードスクリーンデータバッファ (2行×MOB_TOTAL_BOARDS 列)
+            { "name":"BillboardDataBuf","format":"R32G32B32A32_FLOAT", "view":"UAV",
+              "width":9105, "height":2 },
+            // タイル別ビルボードインデックスバッファ
+            // width=65 (1カウント+64インデックス), height=8160 (4K:120×68タイル < D3D12上限16384)
+            { "name":"TileBuf",         "format":"R32_UINT", "view":"UAV",
+              "width":65, "height":8160 },
+            // 群衆描画中間バッファ（画面サイズ）
+            { "name":"MobColorBuf",     "format":"R16G16B16A16_FLOAT", "view":"UAV" }
+        ],
+
+        // ─── Samplers ───
+        "samplers": [
+            // ── ToonAnime_21 オリジナル ──
+            { "name":"samp",      "filter":"ANISOTROPIC" },
+            { "name":"ClampSamp", "filter":"LINEAR",  "addressU":"CLAMP", "addressV":"CLAMP" },
+            { "name":"SkySamp",   "filter":"LINEAR",  "addressU":"WRAP",  "addressV":"CLAMP" },
+            { "name":"PointSamp", "filter":"POINT",   "addressU":"CLAMP", "addressV":"CLAMP" },
+            // ── 群衆描画用サンプラ追加 ──
+            { "name":"LinearSamp","filter":"LINEAR",      "addressU":"CLAMP", "addressV":"CLAMP" },
+            { "name":"WrapSamp",  "filter":"ANISOTROPIC", "addressU":"WRAP",  "addressV":"WRAP"  }
+        ],
+
+        // ─── Passes ───
+        "passes": [
+            // ── ToonAnime_21 オリジナル ──
+            {
+                "name":"BG", "type":"postprocess",
+                "pixelShader": "PS", "vertexShader": "VS",
+                "RTV": [ {"name":"RasterOut", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }]
+            },
+            {
+                "name": "GBuffer",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+                "RTV": [
+                    { "name": "MyNormalDepth", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} },
+                    { "name": "MyGBuffer1",    "clear":true, "value":{"x":-1, "y":-1, "z":-1, "w":-1} },
+                    { "name": "MyGBuffer2",    "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }
+                ],
+                "rasterizerDesc": { "cullMode": "none" }
+            },
+            {
+                "name": "Edge",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+                "RTV": [{ "name": "RasterOut", "clear": false }],
+                "blendDesc": {
+                    "renderTarget0": { "blendEnable": false }
+                },
+                "rasterizerDesc": { "cullMode": "front" }
+            },
+            {
+                "name": "MMD",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": false },
+                "RTV": [{ "name": "RasterOut", "clear": false }],
+                "blendDesc": {
+                    "renderTarget0": {
+                        "blendEnable": true,
+                        "srcBlend": "src_alpha", "destBlend": "inv_src_alpha", "blendOp": "add",
+                        "srcBlendAlpha": "one",   "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"
+                    }
+                },
+                "rasterizerDesc": { "cullMode": "none" }
+            },
+            // ── 群衆描画パス（MMDパスの直後）──
+            // Pass C0: MobColorBuf を透明黒でクリア
+            {
+                "name":"ClearMobColor", "type":"clearUAV",
+                "UAV": { "name":"MobColorBuf" },
+                "value": { "x":0.0, "y":0.0, "z":0.0, "w":0.0 }
+            },
+            // Pass C1: TileBuf のカウント列を 0 リセット
+            {
+                "name":"TileClear", "type":"compute", "computeShader":"CS_TileClear",
+                "UAV": [ { "name":"TileBuf" } ]
+            },
+            // Pass C2: 配置テクスチャ → BillboardDataBuf（ビルボードごと1スレッド）
+            {
+                "name":"MobSetup", "type":"compute", "computeShader":"CS_MobSetup",
+                "UAV": [ { "name":"BillboardDataBuf" } ]
+            },
+            // Pass C3: BillboardDataBuf → TileBuf（ビルボードごと1スレッド）
+            {
+                "name":"MobTileBuild", "type":"compute", "computeShader":"CS_MobTileBuild",
+                "UAV": [ { "name":"TileBuf" } ]
+            },
+            // Pass C4: タイルベースレンダリング → MobColorBuf
+            {
+                "name":"MobRender", "type":"compute", "computeShader":"CS_MobRender",
+                "UAV": [ { "name":"MobColorBuf" } ]
+            },
+            // ── ToonAnime_21 オリジナル（後半）──
+            {
+                "name": "SSAO", "type": "raytracing",
+                "raygenShader": "RayGeneration",
+                "missShader":   [ "Miss" ],
+                "hitGroup": [ { "type":"TRIANGLES", "closestHit":"ClosestHit", "anyHit":"AnyHit", "intersection":"" } ],
+                "maxPayloadSize": 4, "maxAttributeSize": 8, "maxRecursionDepth": 1,
+                "UAV": [ {"name":"SSAO"} ]
+            },
+            // Copy パス: SSAO 合成 + MobColorBuf ブレンド + GBuffer 転写
+            {
+                "name":"Copy", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS"
+            },
+            {"name":"FXAA", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS"}
+        ]
+    }
+}
+[HLSL]
+
+// ToonAnime_mob_01.fxdayo
+//
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ToonAnime_21 ベースレンダラに MikuMikuMob 群衆描画を統合
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Radeon向け: bindlessテクスチャ添え字を NonUniformResourceIndex で囲う
+#define NURI NonUniformResourceIndex
+
+// ============================================================
+// エッジパラメータ
+// ============================================================
+static const float  EdgeWidth          = 0.002;
+static const float  EdgeAlphaThreshold = 0.9;
+static const float4 EDGE_GRAY          = float4(0.55, 0.55, 0.55, 1.0);
+
+// ============================================================
+// AutoLuminous 判定定数 (PPAL.fxdayo と同値)
+// ============================================================
+static const float  AL_SPEC_THRESHOLD  = 0.05;
+static const float  AL_SHIN_THRESHOLD  = 100.0;
+static const float  AL_MAX_OVERBRIGHT  = 16.0;
+
+// ============================================================
+// 2段階アニメ影パラメータ
+// ============================================================
+static const float SHADOW1_THRESHOLD = 0.1;
+static const float SHADOW2_THRESHOLD = -0.15;
+static const float SHADOW_SMOOTH     = 0.02;
+static const float SHADOW1_MULT      = 0.65;
+static const float SHADOW2_MULT      = 0.35;
+static const float TOON_V_LIGHT      = 0.1;
+static const float TOON_V_SHADOW1    = 0.5;
+static const float TOON_V_SHADOW2    = 0.9;
+
+// ============================================================
+// SSAOパラメータ
+// ============================================================
+static const float AO_RADIUS   = 5.0;
+static const float AO_BIAS     = 1e-3;
+static const int   AO_SAMPLES  = 4;
+static const float AO_STRENGTH = 0.5;
+
+// ============================================================
+// FXAA高品質版パラメータ
+// ============================================================
+static const float FXAA_EDGE_THRESHOLD     = 0.063;
+static const float FXAA_EDGE_THRESHOLD_MIN = 0.0312;
+static const float FXAA_SUBPIX_QUALITY     = 0.75;
+static const float FXAA_MAX_SPAN           = 12.0;
+
+
+// ============================================================
+// 群衆描画 共通ヘルパー関数
+// （どのパス #ifdef にも属さない — 全パスから参照可能）
+// ============================================================
+
+// ---------------------------------------------------------------
+// MMMob_ColorToFloat — 配置テクスチャから 1 個の浮動小数点値を復号
+// 元コード: S_N_Fes_mob.fx の MMMob_ColorToFloat() を DX12 HLSL に移植
+//   i : ArrangeTex の X 方向ピクセル開始インデックス
+//   j : ArrangeTex の Y 方向ピクセルインデックス
+// 返値: デコードされた実数値
+// ---------------------------------------------------------------
+float MMMob_ColorToFloat(int i, int j)
+{
+    float2 uv = float2((i + 0.5) / float(MOB_TEX_WIDTH8),
+                       (j + 0.5) / float(MOB_TEX_HEIGHT));
+    float4 d = ArrangeTex.SampleLevel(PointSamp, uv, 0);
+
+    // RGBA (0..1) を [0..255] に戻して多倍長整数として符号付き実数を復元
+    float tNum = (65536.0 * d.x + 256.0 * d.y + d.z) * 255.0;
+    int   pNum = (int)round(d.w * 255.0);
+    int   sgn  = 1 - 2 * (pNum % 2);
+    return tNum * pow(10.0, (float)(pNum / 2) - 64.0) * (float)sgn;
+}
+
+// ---------------------------------------------------------------
+// 乱数揺れ位置補正を適用した XYZ 座標を返す
+// 元コード: S_N_Fes_mob.fx の MMMob_TransMatrixBase() から移植
+// ---------------------------------------------------------------
+float3 MMMob_ApplyRandomMove(float3 pos, float rand0)
+{
+    float3 randVec = float3(frac((rand0 + 0.531) * 43.0),
+                             rand0,
+                             frac((rand0 + 0.357) * 37.0));
+    float3 Rand = 1.0 - randVec * C_RandMove * 0.5;
+
+    // X: 正弦波揺れ
+    pos.x += 10.0 * Rand.x * C_XAmp
+           * sin(4.0 * PI * C_XFreq * Rand.x * Time
+                 + C_XPhase * 2.0 * PI * randVec.x);
+    // Y: abs(sin) によるジャンプ型揺れ
+    pos.y += 10.0 * Rand.y * C_YAmp
+           * abs(sin(4.0 * PI * C_YFreq * Rand.y * Time
+                     + C_YPhase * PI * randVec.y));
+    // Z: 正弦波揺れ
+    pos.z += 10.0 * Rand.z * C_ZAmp
+           * sin(4.0 * PI * C_ZFreq * Rand.z * Time
+                 + C_ZPhase * 2.0 * PI * randVec.z);
+    return pos;
+}
+
+// ---------------------------------------------------------------
+// 配置テクスチャからビルボードのワールド座標を取得
+// ---------------------------------------------------------------
+bool MMMob_GetBillboardWorldPos(uint bidx,
+    out float3 worldPos, out uint modelIdx, out float rand0)
+{
+    // 種モデル番号とボード番号を分解
+    modelIdx = bidx % MOB_MODEL_COUNT;
+    uint boardIdx = bidx / MOB_MODEL_COUNT;
+
+    // オブジェクトインデックス（元コードの objIndex と等価）
+    uint objIndex = modelIdx
+                  + (uint)(0) * MOB_MODEL_COUNT             // RepertIndex=0
+                  + boardIdx * MOB_REPERT_COUNT * MOB_MODEL_COUNT;
+
+    // 配置テクスチャ座標
+    int i = (int)(objIndex / (uint)MOB_TEX_HEIGHT) * 8;
+    int j = (int)(objIndex % (uint)MOB_TEX_HEIGHT);
+
+    float wx     = MMMob_ColorToFloat(i + 0, j);
+    float wy     = MMMob_ColorToFloat(i + 1, j);
+    float wz     = MMMob_ColorToFloat(i + 2, j);
+    float wscale = MMMob_ColorToFloat(i + 6, j);
+           rand0 = MMMob_ColorToFloat(i + 7, j);
+
+    // スケールが 0 以下の無効エントリは除外
+    if (wscale <= 0.0) { worldPos = 0; return false; }
+
+    // ランダム揺れ適用
+    float3 pos = float3(wx, wy, wz);
+    pos = MMMob_ApplyRandomMove(pos, rand0);
+
+    // センターボーン追従 (MMMob_FOLLOWED_OBJ 相当)
+    worldPos = pos + C_Center + float3(0.0, -MOB_INIT_CENTER_Y, 0.0);
+    worldPos.y += MOB_BOARD_CENTER_Y;
+
+    return true;
+}
+
+
+// ============================================================
+// BGパス: スカイボックス描画
+// ============================================================
+#ifdef YRZ_PASS_BG
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+void RaySaySay(float2 Tex, out float3 ray, out float3 pos, uniform bool normalizeFlag = true)
+{
+	float2 tex = (Tex.xy - 0.5) * 2.0;
+	if (Perspective) {
+		ray =
+			ViewMatrix._13_23_33 / ProjectionMatrix._33
+			+ (ViewMatrix._11_21_31 * tex.x / ProjectionMatrix._11)
+			- (ViewMatrix._12_22_32 * tex.y / ProjectionMatrix._22);
+		if (normalizeFlag)
+			ray = normalize(ray);
+		pos = CameraPosition;
+	} else {
+		ray = CameraForward;
+		pos = CameraPosition + CameraRight * tex.x / ProjectionMatrix._11 - CameraUp * tex.y / ProjectionMatrix._22;
+	}
+}
+
+static float SkyboxPhi = 0;
+
+float2 LongRat(float3 v)
+{
+	return float2(atan2(v.z, v.x), acos(v.y)) / float2(-2 * PI, PI) - float2(0.25 + SkyboxPhi, 0);
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 o = 0;
+	float3 rd, ro;
+	RaySaySay(vso.uv, rd, ro);
+	float2 uv = LongRat(rd);
+	o = Skybox.SampleLevel(SkySamp, uv, 0);
+	return float4(o.rgb, 0);
+}
+#endif
+
+
+// ============================================================
+// Edgeパス: 外形(シルエット)エッジ描画
+// ============================================================
+#ifdef YRZ_PASS_Edge
+struct VSO {
+	float4 position:SV_POSITION;
+};
+
+VSO VS( float4 pos : POSITION, float3 normal:NORMAL, float3 tangent:TANGENT, float2 uv:TEXCOORD )
+{
+	VSO o = (VSO)0;
+	float4 clipPos = mul(pos, ViewProjectionMatrix);
+
+	float3 viewNormal = mul(normal, (float3x3)ViewMatrix);
+	float2 dir = viewNormal.xy;
+
+	float len = length(dir);
+	if (len < 1e-5) dir = float2(1, 0);
+	else            dir /= len;
+
+	clipPos.xy += dir * EdgeWidth * clipPos.w;
+	o.position = clipPos;
+	return o;
+}
+
+float4 PS(VSO vso, uint iFace:SV_PrimitiveID) : SV_TARGET
+{
+	uint imo = ModelIndex;
+	MMDMaterial m = MMDMaterials[imo][Faces[imo][iFace]];
+
+	// アルファが低い面はエッジなし
+	if (m.diffuse.a < EdgeAlphaThreshold) discard;
+
+	// AutoLuminous 発光材質（方式A: スペキュラ黒 + shininess≥100）は
+	// 透明発光ポリゴンとして扱い、外形エッジを描画しない
+	float specMax = max(m.specular.r, max(m.specular.g, m.specular.b));
+	bool isALEmissive = (specMax <= AL_SPEC_THRESHOLD) && (m.shininess >= AL_SHIN_THRESHOLD);
+	if (isALEmissive) discard;
+
+	return (m.edgeSize >= 1.0) ? m.edgeColor : EDGE_GRAY;
+}
+#endif
+
+
+// ============================================================
+// MMDパス & GBufferパス: 2段階アニメ調トゥーンシェーディング
+// ============================================================
+#if defined(YRZ_PASS_MMD) || defined(YRZ_PASS_GBuffer)
+struct VSO {
+	float4 position:SV_POSITION;
+	float3 normal:NORMAL;
+	float2 uv:TEXCOORD;
+	float2 spuv:TEXCOORD1;
+	float3 eye:TEXCOORD2;
+	float  viewZ:TEXCOORD3;
+};
+
+VSO VS( float4 pos : POSITION, float3 normal:NORMAL, float3 tangent:TANGENT, float2 uv:TEXCOORD )
+{
+	VSO o = (VSO)0;
+	o.position = mul(pos, ViewProjectionMatrix);
+	o.uv       = uv;
+	o.spuv     = mul(normal, (float3x2)ViewMatrix) * float2(0.5, -0.5) + 0.5;
+	o.normal   = normal;
+	o.eye      = CameraPosition - pos.xyz;
+	o.viewZ    = mul(pos, ViewMatrix).z;
+	return o;
+}
+
+void CalcAnimeShadow(float NoL, out float inShadow1, out float inShadow2)
+{
+	inShadow1 = 1.0 - smoothstep(SHADOW1_THRESHOLD - SHADOW_SMOOTH,
+	                              SHADOW1_THRESHOLD + SHADOW_SMOOTH, NoL);
+	inShadow2 = 1.0 - smoothstep(SHADOW2_THRESHOLD - SHADOW_SMOOTH,
+	                              SHADOW2_THRESHOLD + SHADOW_SMOOTH, NoL);
+}
+
+float4 MMDColor(VSO vso, uint iFace, bool vface)
+{
+	uint imo = ModelIndex;
+	MMDMaterial m = MMDMaterials[imo][Faces[imo][iFace]];
+	if (!vface && ((m.drawFlag & 1) == 0)) discard;
+
+	float3 Le  = LightColor;
+	float3 L   = -LightDirection;
+	float3 N   = vso.normal;
+	float3 V   = normalize(vso.eye);
+	float3 H   = normalize(L + V);
+	float  NoL = dot(N, L);
+	uint  tidx = TextureTable[imo];
+
+	float4 tex = 1;
+	if (m.tex >= 0) {
+		tex = Textures[NURI(tidx + m.tex)].Sample(samp, vso.uv);
+		tex.rgb = lerp(1, tex.rgb * m.textureMulValue.rgb + m.textureAddValue.rgb,
+		               m.textureMulValue.a + m.textureAddValue.a);
+	}
+
+	float4 o = float4(saturate(m.diffuse.rgb * Le + m.ambient), m.diffuse.a) * tex;
+
+	// ── AutoLuminous 発光材質（方式A）: 自照射早期リターン ──────────
+	{
+		float specMaxAL = max(m.specular.r, max(m.specular.g, m.specular.b));
+		if ((specMaxAL <= AL_SPEC_THRESHOLD) && (m.shininess >= AL_SHIN_THRESHOLD))
+		{
+			float emissiveScale = clamp(
+				(m.shininess - AL_SHIN_THRESHOLD) / 10.0, 0.0, AL_MAX_OVERBRIGHT);
+			float3 emitColor = saturate((m.diffuse.rgb + m.ambient) * tex.rgb);
+			float  emitAlpha = o.a;
+			if (emitAlpha == 0) discard;
+			if (emitAlpha >= 0.98) emitAlpha = 1;
+			return float4(ToLinear(emitColor) * max(1.0, emissiveScale), emitAlpha);
+		}
+	}
+
+	float inShadow1, inShadow2;
+	CalcAnimeShadow(NoL, inShadow1, inShadow2);
+	if (m.toonFlag == 0 && m.toonTex >= 0) {
+		float toonV = lerp(lerp(TOON_V_LIGHT, TOON_V_SHADOW1, inShadow1),
+		                   TOON_V_SHADOW2, inShadow2);
+		o *= Textures[NURI(tidx + m.toonTex)].Sample(ClampSamp, float2(0.0, toonV));
+	} else if (m.toonFlag == 1) {
+		float mult = lerp(lerp(1.0, SHADOW1_MULT, inShadow1), SHADOW2_MULT, inShadow2);
+		o.rgb *= mult;
+	}
+
+	if (m.spTex >= 0 && (m.spmode == 1 || m.spmode == 2)) {
+		float4 sptex = Textures[NURI(tidx + m.spTex)].Sample(samp, vso.spuv);
+		sptex.rgb = lerp(m.spmode == 1 ? 1 : 0,
+		                 sptex.rgb * m.sphereMulValue.rgb + m.sphereAddValue.rgb,
+		                 m.sphereAddValue.a + m.sphereMulValue.a);
+		o.rgb = (m.spmode == 1) ? o.rgb * sptex.rgb : o.rgb + sptex.rgb;
+		o.a  *= sptex.a;
+	}
+
+	o.rgb += m.specular * Le * pow(max(1e-6, dot(N, H)), m.shininess);
+
+	if (o.a == 0) discard;
+	if (o.a >= 0.98) o.a = 1;
+
+	o.rgb = ToLinear(o.rgb);
+	return o;
+}
+
+	#ifdef YRZ_PASS_MMD
+		// ── MMDパス PS ──
+		float4 PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
+		{
+			return MMDColor(vso, iFace, vface);
+		}
+	#else
+		// ── GBufferパス出力構造体 ──
+		struct PSO {
+			float4 NormalDepth : SV_TARGET0;
+			float4 GBuffer1    : SV_TARGET1;
+			float2 GBuffer2    : SV_TARGET2;
+		};
+
+		#ifndef NO_BARYCENTRICS
+		PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace, float3 bary:SV_Barycentrics) {
+		#else
+		PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) {
+			float3 bary = 0;
+		#endif
+			PSO o = (PSO)0;
+
+			float4 c = MMDColor(vso, iFace, vface);
+
+			{
+				uint   imoG   = ModelIndex;
+				MMDMaterial mG = MMDMaterials[imoG][Faces[imoG][iFace]];
+				float  smG    = max(mG.specular.r, max(mG.specular.g, mG.specular.b));
+				bool   isALG  = (smG <= AL_SPEC_THRESHOLD) && (mG.shininess >= AL_SHIN_THRESHOLD);
+				if (!isALG && c.a < AlphaThreshold) discard;
+			}
+
+			o.NormalDepth = float4(vso.normal, vso.viewZ);
+			o.GBuffer1.r  = ModelIndex & 0x00FFFFFF;
+			o.GBuffer1.g  = ModelIndex >> 24;
+			o.GBuffer1.b  = iFace & 0x00FFFFFF;
+			o.GBuffer1.a  = iFace >> 24;
+			o.GBuffer2    = bary.yz;
+
+			return o;
+		}
+	#endif
+
+#endif
+
+
+// ============================================================
+// 群衆描画 Pass C1: TileClear
+// TileBuf のカウント列（列0）を全タイル分 0 にリセット
+// 1スレッド = 1タイル
+// ============================================================
+#ifdef YRZ_PASS_TileClear
+
+YRZ_NUMTHREADS
+void CS_TileClear(uint3 id : SV_DispatchThreadID)
+{
+    uint TILE_COUNT_X = ((uint)Resolution.x + MOB_TILE_SIZE - 1) / MOB_TILE_SIZE;
+    uint TILE_COUNT_Y = ((uint)Resolution.y + MOB_TILE_SIZE - 1) / MOB_TILE_SIZE;
+    uint totalTiles   = TILE_COUNT_X * TILE_COUNT_Y;
+
+    uint tileIdx = id.x;
+    if (tileIdx >= totalTiles) return;
+
+    // カウント列（列0）を 0 にリセット
+    TileBuf[int2(0, (int)tileIdx)] = 0u;
+}
+
+#endif // YRZ_PASS_TileClear
+
+
+// ============================================================
+// 群衆描画 Pass C2: MobSetup
+// 配置テクスチャ → ビルボードのスクリーン位置・深度・フォグを計算
+// 1スレッド = 1ビルボード
+// ============================================================
+#ifdef YRZ_PASS_MobSetup
+
+YRZ_NUMTHREADS
+void CS_MobSetup(uint3 id : SV_DispatchThreadID)
+{
+    uint bidx = id.x;
+    if (bidx >= MOB_TOTAL_BOARDS) return;
+
+    // --- ワールド座標取得 ---
+    float3 worldPos;
+    uint   modelIdx;
+    float  rand0;
+    if (!MMMob_GetBillboardWorldPos(bidx, worldPos, modelIdx, rand0))
+    {
+        // 無効エントリ: 半径 0 で無効化
+        BillboardDataBuf[int2((int)bidx, MOB_BD_ROW_POS)]  = float4(-9999, -9999, 0, 0);
+        BillboardDataBuf[int2((int)bidx, MOB_BD_ROW_MISC)] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    // --- クリップ空間変換 ---
+    float4 clipPos = mul(float4(worldPos, 1.0), ViewProjectionMatrix);
+    if (clipPos.w <= 0.001)
+    {
+        BillboardDataBuf[int2((int)bidx, MOB_BD_ROW_POS)]  = float4(-9999, -9999, 0, 0);
+        BillboardDataBuf[int2((int)bidx, MOB_BD_ROW_MISC)] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    float3 ndc = clipPos.xyz / clipPos.w;
+
+    // カメラ後方またはフラスタム外（余裕を持たせて±1.2）
+    if (ndc.z < 0.0 || ndc.z > 1.0 || any(abs(ndc.xy) > 1.2))
+    {
+        BillboardDataBuf[int2((int)bidx, MOB_BD_ROW_POS)]  = float4(-9999, -9999, 0, 0);
+        BillboardDataBuf[int2((int)bidx, MOB_BD_ROW_MISC)] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    // --- スクリーン座標（ピクセル）---
+    float2 sc;
+    sc.x = (ndc.x * 0.5 + 0.5) * Resolution.x;
+    sc.y = (1.0 - (ndc.y * 0.5 + 0.5)) * Resolution.y;  // Y 反転
+
+    // --- ビルボード画面半径 ---
+    float viewZ = mul(float4(worldPos, 1.0), ViewMatrix).z;
+    viewZ = max(viewZ, 0.01);
+    float screenR = (MOB_BOARD_SIZE * 0.5) * abs(ProjectionMatrix._11)
+                  / viewZ * Resolution.x * 0.5;
+    screenR = clamp(screenR, MOB_MIN_PIXEL_R, MOB_MAX_PIXEL_R);
+
+    // --- 高さフォグ係数 ---
+    float fogH      = C_FogBottom.y;
+    float fogD      = C_FogTop.y;
+    float fogFactor = saturate((worldPos.y - fogH) / max(fogD - fogH, 0.01));
+
+    // --- BillboardDataBuf に書き出し ---
+    BillboardDataBuf[int2((int)bidx, MOB_BD_ROW_POS)]  = float4(sc.x, sc.y, screenR, viewZ);
+    BillboardDataBuf[int2((int)bidx, MOB_BD_ROW_MISC)] = float4(fogFactor, (float)modelIdx, 0, 0);
+}
+
+#endif // YRZ_PASS_MobSetup
+
+
+// ============================================================
+// 群衆描画 Pass C3: MobTileBuild
+// ビルボード→タイルインデックス割り当て
+// 1スレッド = 1ビルボード
+// ============================================================
+#ifdef YRZ_PASS_MobTileBuild
+
+YRZ_NUMTHREADS
+void CS_MobTileBuild(uint3 id : SV_DispatchThreadID)
+{
+    uint bidx = id.x;
+    if (bidx >= MOB_TOTAL_BOARDS) return;
+
+    // BillboardDataBuf からスクリーンデータを読み出し
+    float4 bd     = BillboardDataBuf.Load(int3((int)bidx, MOB_BD_ROW_POS, 0));
+    float2 bCenter = bd.xy;
+    float  bRadius = bd.z;
+
+    // 半径 0 は無効エントリ
+    if (bRadius <= 0.0) return;
+
+    // ビルボードの AABB をタイル単位に変換
+    uint TILE_COUNT_X = ((uint)Resolution.x + MOB_TILE_SIZE - 1) / MOB_TILE_SIZE;
+    uint TILE_COUNT_Y = ((uint)Resolution.y + MOB_TILE_SIZE - 1) / MOB_TILE_SIZE;
+
+    int tMinX = max(0,                       (int)((bCenter.x - bRadius) / MOB_TILE_SIZE));
+    int tMinY = max(0,                       (int)((bCenter.y - bRadius) / MOB_TILE_SIZE));
+    int tMaxX = min((int)TILE_COUNT_X - 1,   (int)((bCenter.x + bRadius) / MOB_TILE_SIZE));
+    int tMaxY = min((int)TILE_COUNT_Y - 1,   (int)((bCenter.y + bRadius) / MOB_TILE_SIZE));
+
+    // 重なる全タイルに bidx を登録
+    for (int ty = tMinY; ty <= tMaxY; ty++)
+    {
+        for (int tx = tMinX; tx <= tMaxX; tx++)
+        {
+            uint tileIdx = (uint)ty * TILE_COUNT_X + (uint)tx;
+            if (tileIdx >= (uint)MOB_MAX_TILES) continue;
+
+            // カウントをアトミックにインクリメント
+            uint slotIdx;
+            InterlockedAdd(TileBuf[int2(0, (int)tileIdx)], 1u, slotIdx);
+
+            // MOB_MAX_BILLS_PER_TILE 未満のスロットにビルボードインデックスを書き込む
+            if (slotIdx < (uint)MOB_MAX_BILLS_PER_TILE)
+            {
+                TileBuf[int2((int)(slotIdx + 1u), (int)tileIdx)] = bidx;
+            }
+        }
+    }
+}
+
+#endif // YRZ_PASS_MobTileBuild
+
+
+// ============================================================
+// 群衆描画 Pass C4: MobRender
+// タイルベースビルボードレンダリング
+// グループ1個 = タイル1枚 (16×16 px)
+// ============================================================
+#ifdef YRZ_PASS_MobRender
+
+groupshared uint  gs_BillCount;
+groupshared uint  gs_BillIndices[MOB_MAX_BILLS_PER_TILE];
+
+[numthreads(MOB_TILE_SIZE, MOB_TILE_SIZE, 1)]
+void CS_MobRender(
+    uint3 groupID    : SV_GroupID,
+    uint3 localID    : SV_GroupThreadID,
+    uint  groupIndex : SV_GroupIndex)
+{
+    uint TILE_COUNT_X = ((uint)Resolution.x + MOB_TILE_SIZE - 1) / MOB_TILE_SIZE;
+
+    // このグループが担当するタイルのインデックス
+    uint tileIdx = groupID.y * TILE_COUNT_X + groupID.x;
+    if (tileIdx >= (uint)MOB_MAX_TILES) return;
+
+    // ─── Phase 1: グループ共有メモリにビルボードリストをロード ───
+    if (groupIndex == 0u)
+    {
+        gs_BillCount = min(TileBuf[int2(0, (int)tileIdx)],
+                           (uint)MOB_MAX_BILLS_PER_TILE);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    // 各スレッドが1インデックスを担当 (1024スレッド ≥ MOB_MAX_BILLS_PER_TILE=64 なのでループ不要)
+    if (groupIndex < gs_BillCount)
+        gs_BillIndices[groupIndex] = TileBuf[int2((int)(groupIndex + 1u), (int)tileIdx)];
+    GroupMemoryBarrierWithGroupSync();
+
+    // ─── Phase 2: 各ピクセルのカラーを計算 ───
+    int2 pix = int2(groupID.xy) * MOB_TILE_SIZE + int2(localID.xy);
+    if (any(pix >= int2(Resolution))) return;
+
+    // シーン深度（ViewSpace Z）— このレンダラのローカル NormalDepth から取得
+    // ※ポストプロセス版の NormalDepth（グローバル）ではなく MyNormalDepth を参照
+    float sceneViewZ = abs(MyNormalDepth[pix].w);
+
+    float4 outColor = float4(0, 0, 0, 0);
+    float  closestZ = 1e30;
+
+    uint count = gs_BillCount;
+    for (uint k2 = 0u; k2 < count; k2++)
+    {
+        uint bidx = gs_BillIndices[k2];
+
+        // ビルボードのスクリーンデータ読み出し
+        float4 bd0    = BillboardDataBuf.Load(int3((int)bidx, MOB_BD_ROW_POS, 0));
+        float2 bCenter = bd0.xy;
+        float  bRadius = bd0.z;
+        float  bViewZ  = bd0.w;
+
+        if (bRadius <= 0.0) continue;
+
+        // 半径内チェック（円形クリップ）
+        float2 delta = float2(pix) + 0.5 - bCenter;
+        float  dist2 = dot(delta, delta);
+        if (dist2 > bRadius * bRadius) continue;
+
+        // シーンジオメトリとの深度テスト
+        // (bViewZ > sceneViewZ はビルボードがシーンの背後 → 不可視)
+        if (sceneViewZ > 0.001 && bViewZ > sceneViewZ) continue;
+
+        // 同ピクセルに複数ビルボード: 最前面（最小 viewZ）を優先
+        if (bViewZ >= closestZ) continue;
+
+        // モデル番号・フォグ係数を取得
+        float4 bd1      = BillboardDataBuf.Load(int3((int)bidx, MOB_BD_ROW_MISC, 0));
+        float fogFactor = bd1.x;
+        uint  modelIdx  = (uint)bd1.y;
+
+        // UV 計算（ビルボード中心を (0.5, 0.5) として展開）
+        float2 localUV = delta / bRadius * 0.5 + 0.5;
+        localUV = clamp(localUV, 0.0, 1.0);
+
+        // スプライトテクスチャ: 4×4 グリッドから modelIdx のセルを選択
+        // セル番号 0..14 = バリエーション 0..14, 列数 = 4
+        uint   cell    = min(modelIdx, 15u);
+        float2 cellOrg = float2(float(cell % 4u), float(cell / 4u)) / 4.0;
+        float2 uv      = cellOrg + localUV / 4.0;
+
+        // スプライトテクスチャサンプリング
+        float4 color = SpriteTex.SampleLevel(LinearSamp, uv, 0);
+        if (color.a < MOB_ALPHA_CUTOFF) continue;
+        color.rgb = lerp(MOB_FOG_COLOR, color.rgb, fogFactor);
+
+        // 採用
+        closestZ = bViewZ;
+        outColor = color;
+    }
+
+    // 描画色を MobColorBuf に書き込み
+    if (outColor.a > 0.01)
+        MobColorBuf[pix] = outColor;
+}
+
+#endif // YRZ_PASS_MobRender
+
+
+// ============================================================
+// SSAOパス: レイトレーシングによるアンビエントオクルージョン
+// ============================================================
+#ifdef YRZ_PASS_SSAO
+#define RAYTRACING
+
+struct SSAOPayload {
+	float t;
+};
+
+float3 SSAOUVtoWorld(float2 uv, float depth)
+{
+	float2 tex = (uv - 0.5) * 2.0;
+	float3 ray;
+	if (Perspective) {
+		ray = ViewMatrix._13_23_33 / ProjectionMatrix._33
+		    + (ViewMatrix._11_21_31 * tex.x / ProjectionMatrix._11)
+		    - (ViewMatrix._12_22_32 * tex.y / ProjectionMatrix._22);
+	} else {
+		float3 lateral = CameraRight * tex.x / ProjectionMatrix._11
+		               - CameraUp    * tex.y / ProjectionMatrix._22;
+		return CameraPosition + lateral + CameraForward * depth;
+	}
+	return CameraPosition + ray * depth;
+}
+
+[shader("raygeneration")]
+void RayGeneration()
+{
+	uint2  pix = DispatchRaysIndex().xy;
+	float2 uv  = (pix + 0.5) / (float2)DispatchRaysDimensions().xy;
+
+	float4 nd = MyNormalDepth.SampleLevel(PointSamp, uv, 0);
+	if (nd.w == 0.0) { SSAO[pix] = 0.0; return; }
+
+	float3 P = SSAOUVtoWorld(uv, nd.w);
+	float3 N = normalize(nd.xyz);
+	float3x3 TBN = ComputeTBN(N);
+
+	float occlusion = 0.0;
+	[loop]
+	for (int i = 0; i < AO_SAMPLES; i++) {
+		float4 xi = Hash4(uint4(pix.x, pix.y, (uint)(iSample) * (uint)AO_SAMPLES + (uint)i, 7919u));
+		float  pdf;
+		float3 dir = SampleCosWeightedHemisphere(TBN, xi.xy, pdf);
+
+		SSAOPayload payload;
+		payload.t = -1.0;
+
+		RayDesc ray;
+		ray.Origin    = P + N * (nd.w * AO_BIAS);
+		ray.Direction = dir;
+		ray.TMin      = 0.0;
+		ray.TMax      = AO_RADIUS;
+		TraceRay(TLAS, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, 0, 0, 0, ray, payload);
+
+		if (payload.t >= 0.0)
+			occlusion += 1.0 - saturate(payload.t / AO_RADIUS);
+	}
+	occlusion /= (float)AO_SAMPLES;
+
+	float prev  = SSAO[pix].r;
+	float alpha = 1.0 / ((float)iSample + 1.0);
+	SSAO[pix]   = lerp(prev, occlusion, alpha);
+}
+
+[shader("miss")]
+void Miss(inout SSAOPayload payload) { }
+
+[shader("closesthit")]
+void ClosestHit(inout SSAOPayload payload, Attribute attr)
+{
+	payload.t = RayTCurrent();
+}
+
+[shader("anyhit")]
+void AnyHit(inout SSAOPayload payload, Attribute attr) { }
+
+#endif
+
+
+// ============================================================
+// Copyパス: RasterOut → RTOutput & SSAO 適用
+//           MobColorBuf を RasterOut の上にアルファブレンド（追加）
+//           MyGBuffer1/2/NormalDepth → グローバル GBuffer へ転写
+// ============================================================
+#ifdef YRZ_PASS_Copy
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2  pix   = (uint2)vso.position.xy;
+	float  ao    = SSAO[pix].r;
+	float4 color = RasterOut[pix];
+
+	// SSAO 適用
+	color.rgb *= (1.0 - AO_STRENGTH * ao);
+
+	// ── 群衆描画 MobColorBuf をシーンの上にアルファブレンド ──────
+	float4 mob = MobColorBuf[pix];
+	if (mob.a > 0.01)
+		color.rgb = lerp(color.rgb, mob.rgb, mob.a);
+
+	// RTOutput に書き出し
+	RTOutput[pix] = color;
+
+	// グローバル GBuffer に転写（PPAL.fxdayo が参照するため）
+	float4 G1 = MyGBuffer1[pix];
+	GBuffer1[pix].r = (G1.r < 0) ? -1 : (uint)G1.r | ((uint)G1.g << 24);
+	GBuffer1[pix].g = (G1.b < 0) ? -1 : (uint)G1.b | ((uint)G1.a << 24);
+	GBuffer2[pix]    = MyGBuffer2[pix];
+	NormalDepth[pix] = MyNormalDepth[pix];
+
+	discard;
+	return 0;
+}
+
+#endif
+
+
+// ============================================================
+// FXAAパス
+// ============================================================
+#ifdef YRZ_PASS_FXAA
+
+struct VSO {
+	float4 position : SV_POSITION;
+	float2 uv       : TEXCOORD;
+};
+VSO VS(float4 pos : POSITION, float2 uv : TEXCOORD)
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float GetLuma(float3 rgb) { return dot(rgb, float3(0.299, 0.587, 0.114)); }
+
+float4 SampleRTO(float2 uv)
+{
+	float2 fCoord = uv * float2(Resolution) - 0.5;
+	int2   iBase  = int2(floor(fCoord));
+	float2 fr     = fCoord - float2(iBase);
+	int2   bound  = int2(Resolution) - 1;
+	float4 tl = RTOutput[clamp(iBase,              int2(0,0), bound)];
+	float4 tr = RTOutput[clamp(iBase + int2(1, 0), int2(0,0), bound)];
+	float4 bl = RTOutput[clamp(iBase + int2(0, 1), int2(0,0), bound)];
+	float4 br = RTOutput[clamp(iBase + int2(1, 1), int2(0,0), bound)];
+	return lerp(lerp(tl, tr, fr.x), lerp(bl, br, fr.x), fr.y);
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2  pix      = (uint2)vso.position.xy;
+	int2   bound    = int2(Resolution) - 1;
+	float2 texelSize = 1.0 / float2(Resolution);
+	float3 rgbNW = RTOutput[clamp(int2(pix) + int2(-1,-1), int2(0,0), bound)].rgb;
+	float3 rgbN  = RTOutput[clamp(int2(pix) + int2( 0,-1), int2(0,0), bound)].rgb;
+	float3 rgbNE = RTOutput[clamp(int2(pix) + int2( 1,-1), int2(0,0), bound)].rgb;
+	float3 rgbW  = RTOutput[clamp(int2(pix) + int2(-1, 0), int2(0,0), bound)].rgb;
+	float3 rgbM  = RTOutput[pix].rgb;
+	float3 rgbE  = RTOutput[clamp(int2(pix) + int2( 1, 0), int2(0,0), bound)].rgb;
+	float3 rgbSW = RTOutput[clamp(int2(pix) + int2(-1, 1), int2(0,0), bound)].rgb;
+	float3 rgbS  = RTOutput[clamp(int2(pix) + int2( 0, 1), int2(0,0), bound)].rgb;
+	float3 rgbSE = RTOutput[clamp(int2(pix) + int2( 1, 1), int2(0,0), bound)].rgb;
+	float lumaNW = GetLuma(rgbNW), lumaN  = GetLuma(rgbN),  lumaNE = GetLuma(rgbNE);
+	float lumaW  = GetLuma(rgbW),  lumaM  = GetLuma(rgbM),  lumaE  = GetLuma(rgbE);
+	float lumaSW = GetLuma(rgbSW), lumaS  = GetLuma(rgbS),  lumaSE = GetLuma(rgbSE);
+	float lumaMin = min(lumaM, min(min(min(lumaNW, lumaN), min(lumaNE, lumaW)),
+	                               min(min(lumaE,  lumaSW), min(lumaS,  lumaSE))));
+	float lumaMax = max(lumaM, max(max(max(lumaNW, lumaN), max(lumaNE, lumaW)),
+	                               max(max(lumaE,  lumaSW), max(lumaS,  lumaSE))));
+	float lumaRange = lumaMax - lumaMin;
+
+	if (lumaRange < max(FXAA_EDGE_THRESHOLD_MIN, lumaMax * FXAA_EDGE_THRESHOLD)) {
+		RTOutput[pix] = float4(rgbM, RTOutput[pix].a);
+		discard; return 0;
+	}
+
+	float lumaAvg = (lumaN + lumaS + lumaW + lumaE) * 0.25
+	              + (lumaNW + lumaNE + lumaSW + lumaSE) * 0.125;
+	float subpixBlend = saturate(abs(lumaAvg - lumaM) / lumaRange);
+	subpixBlend = smoothstep(0.0, 1.0, subpixBlend) * FXAA_SUBPIX_QUALITY;
+
+	float2 dir;
+	dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE)) - 0.5 * (lumaN - lumaS);
+	dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE)) + 0.5 * (lumaW - lumaE);
+	float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * 0.125), 0.0000305);
+	float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+	dir = clamp(dir * rcpDirMin, -FXAA_MAX_SPAN, FXAA_MAX_SPAN) * texelSize;
+	float3 rgbA = 0.5 * (
+		SampleRTO(vso.uv + dir * (1.0/3.0 - 0.5)).rgb +
+		SampleRTO(vso.uv + dir * (2.0/3.0 - 0.5)).rgb);
+	float3 rgbB = rgbA * 0.5 + 0.25 * (
+		SampleRTO(vso.uv + dir * (0.0/3.0 - 0.5)).rgb +
+		SampleRTO(vso.uv + dir * (3.0/3.0 - 0.5)).rgb);
+	float  lumaB    = GetLuma(rgbB);
+	float3 aaResult = (lumaB < lumaMin || lumaB > lumaMax) ? rgbA : rgbB;
+
+	float3 rgbAvg = (rgbNW + rgbN + rgbNE + rgbW + rgbE + rgbSW + rgbS + rgbSE) * 0.125;
+	float3 result = lerp(aaResult, rgbAvg, subpixBlend * 0.25);
+
+	RTOutput[pix] = float4(result, RTOutput[pix].a);
+	discard;
+	return 0;
+}
+
+#endif
