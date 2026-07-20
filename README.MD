@@ -3,6 +3,8 @@
 [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo) 用のアニメ調トゥーンシェーダーです。
 
 現在の推奨版は [`ToonAnime_29.fxdayo`](ToonAnime_29.fxdayo) です。`ToonAnime_29` は `ToonAnime_28` と同じ描画処理を使い、安全に調整できる項目、変更してはいけない箇所、処理の仕組み、保守時の確認事項をコメントとして整理した版です。
+## 作成
+CODEX
 
 ## 主な機能
 
