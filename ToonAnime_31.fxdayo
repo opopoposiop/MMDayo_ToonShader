@@ -1,0 +1,902 @@
+// ========================================================================
+// ToonAnime_31.fxdayo — PMXモーフコントローラー対応版
+// ========================================================================
+//
+// このファイルは ToonAnime_30.fxdayo を基に、ユーザー調整値を
+// ToonAnime.pmx のモーフから変更できるようにした版です。
+//
+// 【このファイルを調整する方へ】
+//   1. ToonAnime.pmx のモーフを1項目ずつ少しずつ変更してください。
+//   2. 変更前のファイルを残し、同じカメラ・モデル・照明で見比べてください。
+//   3. 「変更不可」「要コードレビュー」の範囲は、見た目だけでなく深度、
+//      透過、SSAO、PPAL との受け渡しを同時に壊す可能性があります。
+//
+// 【コメントの読み方】
+//   HOW     : コードが目的を実現する方法。
+//   WHY NOT : 一見簡単でも採用しなかった方法と、その理由。
+//   Codex   : 将来の自動編集で守るべき契約・確認事項。
+//
+// 【テストについて】
+//   このファイルにはテストコードはありません。テストを追加する場合、その
+//   コメントには「何を確認するテストか（What）」を書き、実装方法の説明と
+//   混ぜないでください。
+//
+// 【変更履歴に書くこと】
+//   コミットログにはコードの要約だけでなく「なぜ変更が必要だったか（Why）」
+//   を記録してください。例:
+//   "半透明面が背後の人物へ AO の影を落としていたため、SSAO 遮蔽から除外"
+//
+// Codex覚書:
+//   - ToonAnime_31 は 30 のユーザー調整値をPMXモーフ制御へ変更。
+//   - 修正依頼がコメント整備だけなら、式・定数値・リソース名・パス順を変えない。
+//   - コード変更時は、末尾の「Codex向け確認項目」をすべて再確認する。
+// ========================================================================
+
+#include "../hlsl/resources.hlsli"
+#include "../hlsl/yrz.hlsli"
+using namespace Dayo;
+using namespace YRZ;
+
+// ========================================================================
+// 変更不可: YRZFX パイプライン定義
+// ========================================================================
+// ここは画面の見た目を直接調整する場所ではありません。
+// テクスチャ名、形式、パス名、パス順、ブレンド、深度設定は、後半の HLSL と
+// 文字列で対応しています。一方だけ変えると、起動失敗、真っ黒な画面、透過の
+// 破綻、SSAO の誤作動につながります。
+//
+// HOW:
+//   BG → GBuffer → Edge → MMD → MMDTrans → SSAO → Copy の順で、
+//   背景、深度情報、輪郭、不透明面、半透明面、AO、合成を処理します。
+//
+// WHY NOT:
+//   半透明を MMD と同じ深度書き込みありで描かないでください。手前の半透明面が
+//   奥の発光ビームを深度で切り取り、交差部が欠けるためです。
+//   また、SSAO を透明面の合成前に単純適用するだけでは、透明面の奥にある色へ
+//   不自然な暗さが乗るため、GBuffer と AO レイの両方で透明面を除外しています。
+//
+// Codex覚書:
+//   パス名は YRZ_PASS_* 条件と一致させる。RasterOut/ZBuf/GBuffer/SSAO の
+//   名前・形式・バインド方法を変える場合は、全参照箇所を同時に監査すること。
+[YRZFX]
+{
+    "fx": {
+        "cereal_class_version": 0,
+        "category": "render",
+        "controllers": [
+            { "name":"C_EdgeWidth",      "controllerName":"ToonAnime.pmx", "item":"EdgeWidth",   "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.2} },
+            { "name":"C_EdgeAlpha",      "controllerName":"ToonAnime.pmx", "item":"EdgeAlpha",   "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.9} },
+            { "name":"C_EdgeR",          "controllerName":"ToonAnime.pmx", "item":"EdgeR",       "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.55} },
+            { "name":"C_EdgeG",          "controllerName":"ToonAnime.pmx", "item":"EdgeG",       "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.55} },
+            { "name":"C_EdgeB",          "controllerName":"ToonAnime.pmx", "item":"EdgeB",       "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.55} },
+            { "name":"C_EdgeA",          "controllerName":"ToonAnime.pmx", "item":"EdgeA",       "type":"float", "slider":{"min":0.0,"max":1.0,"def":1.0} },
+            { "name":"C_Shadow1Pos",     "controllerName":"ToonAnime.pmx", "item":"Shadow1Pos",  "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.55} },
+            { "name":"C_Shadow2Pos",     "controllerName":"ToonAnime.pmx", "item":"Shadow2Pos",  "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.425} },
+            { "name":"C_ShadowSmooth",   "controllerName":"ToonAnime.pmx", "item":"ShadowSmooth","type":"float", "slider":{"min":0.0,"max":1.0,"def":0.0954773869} },
+            { "name":"C_Shadow1Mul",     "controllerName":"ToonAnime.pmx", "item":"Shadow1Mul",  "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.65} },
+            { "name":"C_Shadow2Mul",     "controllerName":"ToonAnime.pmx", "item":"Shadow2Mul",  "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.35} },
+            { "name":"C_ToonLight",      "controllerName":"ToonAnime.pmx", "item":"ToonLight",   "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.1} },
+            { "name":"C_ToonShadow1",    "controllerName":"ToonAnime.pmx", "item":"ToonShadow1", "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.5} },
+            { "name":"C_ToonShadow2",    "controllerName":"ToonAnime.pmx", "item":"ToonShadow2", "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.9} },
+            { "name":"C_AORadius",       "controllerName":"ToonAnime.pmx", "item":"AORadius",    "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.2462311558} },
+            { "name":"C_AOSamples",      "controllerName":"ToonAnime.pmx", "item":"AOSamples",   "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.2} },
+            { "name":"C_AOStrength",     "controllerName":"ToonAnime.pmx", "item":"AOStrength",  "type":"float", "slider":{"min":0.0,"max":1.0,"def":0.5} }
+        ],
+        "textures": [
+            {"name": "ZBuf",         "format": "D32_FLOAT",          "view": "DSV" },
+            {"name": "RasterOut",    "format": "R16G16B16A16_FLOAT",  "view": "RTV" },
+            {"name": "MyNormalDepth","format": "R32G32B32A32_FLOAT",  "view": "RTV" },
+            {"name": "MyGBuffer1",   "format": "R32G32B32A32_FLOAT",  "view": "RTV" },
+            {"name": "MyGBuffer2",   "format": "R32G32_FLOAT",        "view": "RTV" },
+            {"name": "SSAO",         "format": "R8_UNORM",            "view": "UAV" }
+        ],
+        "samplers": [
+            { "name":"samp",      "filter":"ANISOTROPIC" },
+            { "name":"ClampSamp", "filter":"LINEAR",  "addressU":"CLAMP", "addressV":"CLAMP" },
+            { "name":"SkySamp",   "filter":"LINEAR",  "addressU":"WRAP",  "addressV":"CLAMP" },
+            { "name":"PointSamp", "filter":"POINT",   "addressU":"CLAMP", "addressV":"CLAMP" }
+        ],
+        "passes": [
+            {
+                "name":"BG", "type":"postprocess",
+                "pixelShader": "PS", "vertexShader": "VS",
+                "RTV": [ {"name":"RasterOut", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }]
+            },
+            {
+                "name": "GBuffer",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+                "RTV": [
+                    { "name": "MyNormalDepth", "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} },
+                    { "name": "MyGBuffer1",    "clear":true, "value":{"x":-1, "y":-1, "z":-1, "w":-1} },
+                    { "name": "MyGBuffer2",    "clear":true, "value":{"x":0, "y":0, "z":0, "w":0} }
+                ],
+                "rasterizerDesc": { "cullMode": "none" }
+            },
+            {
+                "name": "Edge",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": true, "depth": 1.0 },
+                "RTV": [{ "name": "RasterOut", "clear": false }],
+                "blendDesc": {
+                    "renderTarget0": { "blendEnable": false }
+                },
+                "rasterizerDesc": { "cullMode": "front" }
+            },
+            {
+                "name": "MMD",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": false },
+                "RTV": [{ "name": "RasterOut", "clear": false }],
+                "blendDesc": {
+                    "renderTarget0": {
+                        "blendEnable": true,
+                        "srcBlend": "one", "destBlend": "inv_src_alpha", "blendOp": "add",
+                        "srcBlendAlpha": "one",   "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"
+                    }
+                },
+                "rasterizerDesc": { "cullMode": "none" }
+            },
+            {
+                "name": "MMDTrans",
+                "type": "rasterizer", "vertexShader": "VS", "pixelShader": "PS",
+                "DSV": { "name": "ZBuf", "clear": false },
+                "RTV": [{ "name": "RasterOut", "clear": false }],
+                "blendDesc": {
+                    "renderTarget0": {
+                        "blendEnable": true,
+                        "srcBlend": "one", "destBlend": "inv_src_alpha", "blendOp": "add",
+                        "srcBlendAlpha": "one",   "destBlendAlpha": "inv_src_alpha", "blendOpAlpha": "add"
+                    }
+                },
+                "depthStencilDesc": { "depthWriteMask": "zero", "depthFunc": "less_equal" },
+                "rasterizerDesc": { "cullMode": "none" }
+            },
+            {
+                "name": "SSAO", "type": "raytracing",
+                "raygenShader": "RayGeneration",
+                "missShader":   [ "Miss" ],
+                "hitGroup": [ { "type":"TRIANGLES", "closestHit":"ClosestHit", "anyHit":"AnyHit", "intersection":"" } ],
+                "maxPayloadSize": 4, "maxAttributeSize": 8, "maxRecursionDepth": 1,
+                "UAV": [ {"name":"SSAO"} ]
+            },
+            {
+                "name":"Copy", "type":"postprocess", "pixelShader": "PS", "vertexShader": "VS"
+            }
+        ]
+    }
+}
+[HLSL]
+
+// ========================================================================
+// ToonAnime_31: ToonAnime_30 のユーザー調整値をPMXモーフ制御へ変更
+// ========================================================================
+// WHY:
+//   シェーダーファイルを直接編集せず、MMD上で輪郭・影・SSAOを調整できるように
+//   するため、ToonAnime.pmx のモーフ値を描画パラメーターとして受け取ります。
+//
+// HOW:
+//   PMXのモーフ値はすべて0～1とし、負値・広い値域・整数が必要な項目はHLSL側で
+//   安全な範囲へ変換します。initial.vmdは30版と同じ見た目になる初期値です。
+//
+// WHY NOT:
+//   負値や4以上の値を直接モーフへ入れないでください。通常の0～1スライダーでは
+//   再現しにくく、VMDや別環境へ移した際に値がクランプされる可能性があるためです。
+// ========================================================================
+//
+// ToonAnime_28.fxdayo から継承した処理
+//
+// ToonAnime_28: Exclude alpha-blended polygons from SSAO.  A transparent
+// polygon must remain visible through normal alpha blending, but it must not
+// provide the GBuffer surface or act as an SSAO ray occluder; otherwise the
+// AO applied after compositing appears as an unwanted dark "shadow" on the
+// opaque character behind it.
+//
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ToonAnime_26 の「人物 PMX の目材質が発光／透過する」回帰を修正
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// 【症状】
+//  ToonAnime_26 で人物 PMX の材質「目」（白目・瞳）が白く発光、
+//  または背後が透ける状態になった（ToonAnime26.png）。
+//  ToonAnime_23 では正常に描写される（ToonAnime23.png）。
+//
+// 【真因 — AL 誤判定材質の扱いが 23→26 で激変した】
+//  目材質はスペキュラほぼ黒 + shininess ≥ 100 のものが多く、
+//  IsALEmissiveMat（方式A: スペキュラ黒 + shininess≥100）が
+//  AutoLuminous 発光材質と判定する。判定自体は 23 も 26 も同一だが、
+//  判定後の描画が異なる:
+//   ・ToonAnime_23: 発光材質もフルブライト色を【通常アルファ合成
+//     (α=1)＋深度書き込みあり】で描画。不透明な目はそのまま塗られ、
+//     見た目はほぼ通常描画 → 正常に見えた。
+//   ・ToonAnime_26: 発光材質を一律【純加算合成（出力α=0）＋深度
+//     書き込みなし(MMDTrans)】に変更。白目が背景に加算されて白飛び
+//     （白の上に加算 → 飽和して真っ白）、深度も書かないため背後の
+//     ジオメトリが透けて見える。
+//  26 のこの変更は「交差する発光ビーム同士が互いを切り取らない」
+//  ために必要だったが、不透明な発光（誤判定された目を含む）まで
+//  加算・非遮蔽にしたのが行き過ぎだった。
+//
+// 【修正 — 発光材質をピクセル最終αで「不透明発光／半透明発光」に二分】
+//  発光カバレッジ emitCover（= 材質α × テクスチャα）で振り分ける:
+//   ・不透明発光 (emitCover ≥ OPAQUE_CUT)
+//       … 目・発光パネル等。23 と同じく【遮蔽する通常合成】。
+//         MMD パスで描画（深度テスト＋書き込み ON）。
+//         前乗算 α=1 出力 → result = emitLin + dst·0（完全上書き）。
+//         背後を正しく隠し、白飛び・透過が発生しない。
+//   ・半透明発光 (emitCover < OPAQUE_CUT)
+//       … 発光ビーム・グロー板等。26 と同じく【純加算合成】。
+//         MMDTrans パスで描画（深度書き込み OFF、出力 α=0）。
+//         交差ビームは互いを切り取らず、重なりは黒く潰れない。
+//
+//  これにより:
+//   ・目（不透明）は 23 と同一の見た目に復帰（発光・透過しない）
+//   ・半透明発光ビームは 26 の成果をそのまま維持
+//   ・非発光半透明が発光を遮蔽しない（26 の成果）も維持
+//   ・不透明／半透明の判定は従来通りピクセル単位の最終α
+//
+//  パス構成・ブレンド設定は 26 から変更なし。変更は HLSL の振り分け
+//  ロジックのみ:
+//   (1) MMDColor: AL 発光分岐を emitCover で二分（上記）
+//   (2) MMD パス PS: 「発光材質を一律 discard」を廃止。
+//       c.a < OPAQUE_CUT の discard が半透明発光（α=0）も自然に弾く。
+//   (3) MMDTrans パス PS: 判定を「c.a ≥ OPAQUE_CUT なら discard」に
+//       単純化。不透明発光（α=1）は MMD パス描画済みなので除外され、
+//       半透明発光（α=0）と非発光半透明のみ描画される。
+//
+//  AutoLuminous 互換の Bloom 処理は PPAL.fxdayo（ポストプロセス）が担当。
+//  （GBuffer への AL 材質書き込みは従来通り維持 → PPAL の解析に影響なし）
+
+// Radeon向け: bindlessテクスチャ添え字をNonUniformResourceIndexで囲う
+// 変更不可: AMD GPU を含む環境でテクスチャ配列の参照先を正しく伝えるために必要。
+// WHY NOT: NURI を外すと、GPU によっては別マテリアルのテクスチャを読む可能性がある。
+#define NURI NonUniformResourceIndex
+
+// ============================================================
+// PMXモーフ変更可: エッジ（輪郭線）の見た目
+// ============================================================
+// HOW:
+//   ToonAnime.pmx の0～1のモーフ値を、各シェーダー値へ変換します。
+//   EdgeWidth は0～0.01、EdgeAlphaとEdgeR/G/B/Aは0～1に対応します。
+//
+// 調整の目安:
+//   - まず EdgeWidth を 0.001～0.004 程度で試す。
+//   - 色の各成分は 0=黒、1=白。値を一度に大きく変えない。
+//
+// WHY NOT:
+//   輪郭を太くする目的で Edge パスの深度設定や頂点計算を変更しないでください。
+//   表面との深度競合や、透過テクスチャの黒塗りが再発するためです。
+#define EdgeWidth          (0.01 * saturate(C_EdgeWidth))
+#define EdgeAlphaThreshold (saturate(C_EdgeAlpha))
+#define EDGE_GRAY          float4(saturate(C_EdgeR), saturate(C_EdgeG), saturate(C_EdgeB), saturate(C_EdgeA))
+
+// PMX マテリアル描画フラグ ビット定義
+//   bit0 0x01: 両面描画   bit4 0x10: エッジ描画
+// 変更不可: PMX ファイル仕様のビット値です。見た目調整用ではありません。
+static const uint   MAT_FLAG_DOUBLESIDE = 0x01u; // 変更不可
+static const uint   MAT_FLAG_EDGE       = 0x10u; // 変更不可
+
+// ============================================================
+// 変更不可: AutoLuminous 判定定数 (PPAL.fxdayo と同値)
+// ============================================================
+// PPAL.fxdayo と値をそろえる必要があります。
+// WHY NOT:
+//   ToonAnime 側だけ変更すると、通常描画での発光扱いと PPAL の Bloom 判定が
+//   食い違い、目が発光する、発光面に輪郭が出る、といった不整合が起きます。
+// Codex覚書: 変更依頼時は PPAL 側の同名・同目的定数も検索し、同時更新を提案する。
+static const float  AL_SPEC_THRESHOLD  = 0.05;  // 変更不可（PPALと同期）
+static const float  AL_SHIN_THRESHOLD  = 100.0; // 変更不可（PPALと同期）
+static const float  AL_MAX_OVERBRIGHT  = 16.0;  // 変更不可（PPALと同期）
+
+// AutoLuminous 発光材質判定（方式A: スペキュラ黒 + shininess≥100）
+//   MMD / MMDTrans / Edge / GBuffer の各パスから共通利用するため
+//   全 #ifdef ブロックの外側でグローバルに定義する。
+// HOW: スペキュラ RGB の最大値が十分に小さく、shininess がしきい値以上なら発光。
+// WHY NOT: 材質名では判定しない。名前はモデルごとに異なり、モーフ後の状態も
+//          正しく反映できないため、描画時点の材質数値で判定します。
+bool IsALEmissiveMat(MMDMaterial m)
+{
+	float specMax = max(m.specular.r, max(m.specular.g, m.specular.b));
+	return (specMax <= AL_SPEC_THRESHOLD) && (m.shininess >= AL_SHIN_THRESHOLD);
+}
+
+// ============================================================
+// 変更不可: 不透明／半透明 ピクセル単位判定しきい値
+// ============================================================
+//   最終α(前乗算後の .a) がこの値以上のピクセルのみ「不透明」とみなし、
+//   MMD パスで深度を書き込む。それ未満は半透明として MMDTrans パスへ。
+//   発光材質も同じしきい値で「不透明発光／半透明発光」に二分される。
+// WHY NOT:
+//   好みで下げると、ほぼ透明なピクセルまで深度を書き、奥の髪・目・発光板を
+//   隠す可能性があります。変更する場合は MMD/GBuffer/SSAO を一体で再検証します。
+static const float  OPAQUE_CUT          = 0.999; // 要コードレビュー
+
+// ============================================================
+// PMXモーフ変更可: 2段階アニメ影
+// ============================================================
+// HOW:
+//   THRESHOLD は影が始まる向き、SMOOTH は境界の柔らかさ、MULT は影の明るさ。
+//   TOON_V_* は Toon テクスチャのどの高さをライト／1号影／2号影に使うかを示す。
+//
+// 調整の目安:
+//   - 影を明るくする: SHADOW1_MULT / SHADOW2_MULT を少し上げる。
+//   - 影境界を柔らかくする: SHADOW_SMOOTH を少し上げる。
+//   - 値は 0.02 程度ずつ変え、1号影が2号影より明るい関係を保つ。
+//
+// WHY NOT:
+//   Shadow1Pos / Shadow2Pos は0～1を-1～1へ変換します。
+//   ShadowSmooth は0～1を0.001～0.2へ変換し、その他は0～1をそのまま使います。
+//   SHADOW1_THRESHOLD と SHADOW2_THRESHOLD の順序を逆転させないでください。
+//   影の段階が重なり、意図しない帯や急な色変化が出るためです。
+#define SHADOW1_THRESHOLD lerp(-1.0, 1.0, saturate(C_Shadow1Pos))
+#define SHADOW2_THRESHOLD lerp(-1.0, 1.0, saturate(C_Shadow2Pos))
+#define SHADOW_SMOOTH     lerp(0.001, 0.2, saturate(C_ShadowSmooth))
+#define SHADOW1_MULT      saturate(C_Shadow1Mul)
+#define SHADOW2_MULT      saturate(C_Shadow2Mul)
+#define TOON_V_LIGHT      saturate(C_ToonLight)
+#define TOON_V_SHADOW1    saturate(C_ToonShadow1)
+#define TOON_V_SHADOW2    saturate(C_ToonShadow2)
+
+// ============================================================
+// PMXモーフ変更可: SSAO（物体の接触部や隙間の陰影）
+// ============================================================
+// HOW:
+//   RADIUS は遮蔽物を探す距離、SAMPLES は1ピクセルあたりのレイ本数、
+//   STRENGTH は暗くする強さです。SAMPLES を増やすほど滑らかになりますが重くなります。
+//   BIAS は表面が自分自身を遮蔽する誤判定を避ける内部補正です。
+//
+// WHY NOT:
+//   AORadius は0～1を0.1～20へ、AOSamplesは0～1を整数1～16へ変換します。
+//   AOStrengthは0～1をそのまま使います。
+//   AO_BIAS を見た目調整に使わないでください。小さすぎると自己遮蔽ノイズ、
+//   大きすぎると接触影が浮くため、座標系と深度精度を理解した変更が必要です。
+static const float AO_BIAS     = 1e-3; // 要コードレビュー
+#define AO_RADIUS   lerp(0.1, 20.0, saturate(C_AORadius))
+#define AO_SAMPLES  max(1, min(16, (int)floor(1.0 + 15.0 * saturate(C_AOSamples) + 0.5)))
+#define AO_STRENGTH saturate(C_AOStrength)
+
+// ============================================================
+// 変更不可: PNG アルファ透過 — 内部の数値安定化パラメータ
+// ============================================================
+// WHY NOT:
+//   TEX_ALPHA_CUT を上げて透過の縁を消そうとすると、髪先やレースの薄い画素まで
+//   欠けます。ALPHA_EPSILON はゼロ除算・極小値対策なので見た目調整に使いません。
+static const float TEX_ALPHA_CUT       = 0.004;   // 変更不可: PNG 8bit α 最小有効値 ≒ 1/255
+static const float ALPHA_EPSILON       = 1e-4;    // 変更不可: ブレンド経路の α 下限ガード
+
+
+// ============================================================
+// BGパス: スカイボックス描画
+// ============================================================
+// 変更不可:
+//   カメラから各画素へ伸びる方向を求め、その方向を緯度・経度 UV に変換して
+//   Skybox を読みます。背景の α=0 は、後段で背景を前景として扱わないためです。
+// HOW: 透視投影と平行投影でレイの作り方を分け、LongRat で全天球 UV に変換。
+// WHY NOT: 背景を不透明 α=1 で返すと、後段の合成や透過物の扱いが変わります。
+#ifdef YRZ_PASS_BG
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+void RaySaySay(float2 Tex, out float3 ray, out float3 pos, uniform bool normalizeFlag = true)
+{
+	float2 tex = (Tex.xy - 0.5) * 2.0;
+	if (Perspective) {
+		ray =
+			ViewMatrix._13_23_33 / ProjectionMatrix._33
+			+ (ViewMatrix._11_21_31 * tex.x / ProjectionMatrix._11)
+			- (ViewMatrix._12_22_32 * tex.y / ProjectionMatrix._22);
+		if (normalizeFlag)
+			ray = normalize(ray);
+		pos = CameraPosition;
+	} else {
+		ray = CameraForward;
+		pos = CameraPosition + CameraRight * tex.x / ProjectionMatrix._11 - CameraUp * tex.y / ProjectionMatrix._22;
+	}
+}
+
+static float SkyboxPhi = 0;
+
+float2 LongRat(float3 v)
+{
+	return float2(atan2(v.z, v.x), acos(v.y)) / float2(-2 * PI, PI) - float2(0.25 + SkyboxPhi, 0);
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	float4 o = 0;
+	float3 rd, ro;
+	RaySaySay(vso.uv, rd, ro);
+	float2 uv = LongRat(rd);
+	o = Skybox.SampleLevel(SkySamp, uv, 0);
+	return float4(o.rgb, 0);
+}
+#endif
+
+
+// ============================================================
+// Edgeパス: 外形(シルエット)エッジ描画
+// ============================================================
+//   (A) エッジ描画フラグ (PMX material flag bit4 = 0x10) を尊重。
+//   (B) テクスチャの α チャネルをサンプルし、透過テクセルを discard。
+// HOW:
+//   表面ではなく裏面を法線方向へ少し広げて描くことで、はみ出した部分だけを
+//   輪郭線として残します。材質フラグ、材質 α、発光判定、PNG α を順に確認し、
+//   線を描いてよいピクセルだけを通します。
+// WHY NOT:
+//   PNG の透明部分を無視して面全体へ線を描くと、網・レース・髪の隙間が黒く
+//   塗り潰されます。発光材質へ線を描くと、光の板に不自然な外枠が出ます。
+// Codex覚書: discard 条件を減らす変更では ToonAnime_22～23 の回帰理由を確認する。
+#ifdef YRZ_PASS_Edge
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float3 normal:NORMAL, float3 tangent:TANGENT, float2 uv:TEXCOORD )
+{
+	VSO o = (VSO)0;
+	float4 clipPos = mul(pos, ViewProjectionMatrix);
+
+	float3 viewNormal = mul(normal, (float3x3)ViewMatrix);
+	float2 dir = viewNormal.xy;
+
+	float len = length(dir);
+	if (len < 1e-5) dir = float2(1, 0);
+	else            dir /= len;
+
+	clipPos.xy += dir * EdgeWidth * clipPos.w;
+	o.position = clipPos;
+	o.uv       = uv;
+	return o;
+}
+
+float4 PS(VSO vso, uint iFace:SV_PrimitiveID) : SV_TARGET
+{
+	uint imo = ModelIndex;
+	MMDMaterial m = MMDMaterials[imo][Faces[imo][iFace]];
+
+	// (A) エッジ描画フラグ尊重 (PMX material flag bit4 = 0x10)
+	if ((m.drawFlag & MAT_FLAG_EDGE) == 0) discard;
+
+	// マテリアル自体が半透明ならエッジなし
+	if (m.diffuse.a < EdgeAlphaThreshold) discard;
+
+	// AutoLuminous 発光材質はエッジを描画しない
+	if (IsALEmissiveMat(m)) discard;
+
+	// (B) テクスチャ アルファチャネル透過に対応（透過テクセルにエッジを描かない）
+	uint tidx = TextureTable[imo];
+	if (m.tex >= 0) {
+		float texA = Textures[NURI(tidx + m.tex)].Sample(samp, vso.uv).a;
+		if (texA < EdgeAlphaThreshold) discard;
+	}
+
+	return (m.edgeSize >= 1.0) ? m.edgeColor : EDGE_GRAY;
+}
+#endif
+
+
+// ============================================================
+// MMDパス / MMDTransパス / GBufferパス: 2段階アニメ調トゥーンシェーディング
+// ============================================================
+//   MMD     : 不透明ピクセル（不透明発光を含む。深度書き込み ON）
+//   MMDTrans: 非発光の半透明 ＋ 半透明発光（深度書き込み OFF）
+//   GBuffer : 不透明ピクセルだけの法線/深度/ID を G-Buffer へ出力（PPAL 用）
+// ============================================================
+// 変更不可:
+//   3パスは MMDColor の同じ結果を最終 α で振り分けます。MMD は遮蔽できる面、
+//   MMDTrans は透ける面、GBuffer は SSAO の基準面を担当します。
+//
+// HOW:
+//   1. MMDColor が通常色・発光色と最終 α を前乗算形式で返す。
+//   2. OPAQUE_CUT 以上なら MMD と GBuffer、それ未満なら MMDTrans が採用する。
+//   3. 半透明発光だけは α=0 で色を返し、同じ前乗算ブレンドを純加算として使う。
+//
+// WHY NOT:
+//   マテリアル単位だけで不透明／半透明を分けないでください。PNG の1枚の中に
+//   不透明部と半透明部が共存するため、ピクセル単位でなければ深度が破綻します。
+//   また、通常色を前乗算せず srcBlend=one へ渡すと半透明色が明るくなりすぎます。
+//
+// Codex覚書:
+//   MMDColor の戻り値 .a は色の透明度であると同時にパス振り分け契約。
+//   戻り値や discard を変える場合は MMD/MMDTrans/GBuffer の3箇所を同時に監査。
+#if defined(YRZ_PASS_MMD) || defined(YRZ_PASS_MMDTrans) || defined(YRZ_PASS_GBuffer)
+struct VSO {
+	float4 position:SV_POSITION;
+	float3 normal:NORMAL;
+	float2 uv:TEXCOORD;
+	float2 spuv:TEXCOORD1;
+	float3 eye:TEXCOORD2;
+	float  viewZ:TEXCOORD3;
+};
+
+VSO VS( float4 pos : POSITION, float3 normal:NORMAL, float3 tangent:TANGENT, float2 uv:TEXCOORD )
+{
+	VSO o = (VSO)0;
+	o.position = mul(pos, ViewProjectionMatrix);
+	o.uv       = uv;
+	o.spuv     = mul(normal, (float3x2)ViewMatrix) * float2(0.5, -0.5) + 0.5;
+	o.normal   = normal;
+	o.eye      = CameraPosition - pos.xyz;
+	o.viewZ    = mul(pos, ViewMatrix).z;
+	return o;
+}
+
+void CalcAnimeShadow(float NoL, out float inShadow1, out float inShadow2)
+{
+	inShadow1 = 1.0 - smoothstep(SHADOW1_THRESHOLD - SHADOW_SMOOTH,
+	                              SHADOW1_THRESHOLD + SHADOW_SMOOTH, NoL);
+	inShadow2 = 1.0 - smoothstep(SHADOW2_THRESHOLD - SHADOW_SMOOTH,
+	                              SHADOW2_THRESHOLD + SHADOW_SMOOTH, NoL);
+}
+
+// ──────────────────────────────────────────────────────────────
+// MMDColor
+//   戻り値は【前乗算アルファ】(premultiplied alpha)。
+//     ・通常材質       : float4(rgb·a, a)        → 通常のアルファ合成
+//     ・AL不透明発光   : float4(emitLin, 1)      → 遮蔽する通常合成（23 互換）
+//     ・AL半透明発光   : float4(emitLin·cov, 0)  → 純加算合成（重なり減衰なし）
+//   戻り値 .a を「ピクセル単位の不透明度」として MMD/MMDTrans の振り分けに使う。
+//   texAlpha には PNG テクスチャ単独の α 原値を出力。
+// HOW:
+//   ベース色 → PNG α → AutoLuminous 判定 → 2段影 → Toon/スフィアマップ
+//   → スペキュラ → 線形色空間変換 → 前乗算、の順に1ピクセルの色を作ります。
+// WHY NOT:
+//   PNG α を textureMulValue/AddValue と同じ lerp へ混ぜないでください。透明度が
+//   RGB 補正に引きずられ、透明な穴や柔らかな縁が不透明へ戻るためです。
+// ──────────────────────────────────────────────────────────────
+float4 MMDColor(VSO vso, uint iFace, bool vface, out float texAlpha)
+{
+	uint imo = ModelIndex;
+	MMDMaterial m = MMDMaterials[imo][Faces[imo][iFace]];
+	if (!vface && ((m.drawFlag & MAT_FLAG_DOUBLESIDE) == 0)) discard;
+
+	float3 Le  = LightColor;
+	float3 L   = -LightDirection;
+	float3 N   = vso.normal;
+	float3 V   = normalize(vso.eye);
+	float3 H   = normalize(L + V);
+	float  NoL = dot(N, L);
+	uint  tidx = TextureTable[imo];
+
+	// ── PNG テクスチャサンプリング ──────────────────────────────
+	float4 tex  = 1;
+	float  texA0 = 1.0;  // テクスチャ未指定材質では完全不透明とみなす
+	if (m.tex >= 0) {
+		tex   = Textures[NURI(tidx + m.tex)].Sample(samp, vso.uv);
+		texA0 = tex.a;  // ★ 原 α を保存（lerp 加工の影響を受けない）
+
+		tex.rgb = lerp(1, tex.rgb * m.textureMulValue.rgb + m.textureAddValue.rgb,
+		               m.textureMulValue.a + m.textureAddValue.a);
+
+		// PNG アルファ早期テスト：透過テクセルを即 discard。
+		if (texA0 < TEX_ALPHA_CUT) discard;
+	}
+	texAlpha = texA0;
+
+	// tex.a も明示的に texA0 で上書き
+	tex.a = texA0;
+
+	float4 o = float4(saturate(m.diffuse.rgb * Le + m.ambient), m.diffuse.a) * tex;
+
+	// ── AutoLuminous 発光材質（方式A）: 早期リターン ──────────────
+	//   ピクセル最終α (emitCover) で「不透明発光／半透明発光」を二分する。
+	//   【ToonAnime_27 修正】不透明発光（目・発光パネル等 — AL 誤判定
+	//   される目材質を含む）は 23 と同じく背後を遮蔽する通常合成にし、
+	//   白飛び・透過の回帰を解消。半透明発光（ビーム等）のみ 26 の
+	//   純加算合成を維持する。
+	if (IsALEmissiveMat(m))
+	{
+		float emissiveScale = clamp(
+			(m.shininess - AL_SHIN_THRESHOLD) / 10.0, 0.0, AL_MAX_OVERBRIGHT);
+		float3 emitColor = saturate((m.diffuse.rgb + m.ambient) * tex.rgb);
+		float  emitCover = max(o.a, 0.0);          // ビーム形状カバレッジ
+		if (emitCover < ALPHA_EPSILON) discard;
+		float3 emitLin   = ToLinear(emitColor) * max(1.0, emissiveScale);
+
+		if (emitCover >= OPAQUE_CUT) {
+			// 不透明発光: 遮蔽する通常合成（前乗算 α=1 → 完全上書き）。
+			//   MMD パスで描画され深度も書く（23 互換の見た目）。
+			//   result = emitLin + dst·(1-1) = emitLin
+			return float4(emitLin, 1.0);
+		}
+		// 半透明発光: 純加算合成（前乗算 rgb·cov、出力 α=0）。
+		//   MMDTrans パスで描画。深度は書かない。
+		//   result = emitLin·cov + dst   （背景を一切減衰させない）
+		return float4(emitLin * emitCover, 0.0);
+	}
+
+	float inShadow1, inShadow2;
+	CalcAnimeShadow(NoL, inShadow1, inShadow2);
+	if (m.toonFlag == 0 && m.toonTex >= 0) {
+		float toonV = lerp(lerp(TOON_V_LIGHT, TOON_V_SHADOW1, inShadow1),
+		                   TOON_V_SHADOW2, inShadow2);
+		// toon テクスチャによる α 汚染を避けるため rgb のみ乗算
+		float4 toonSamp = Textures[NURI(tidx + m.toonTex)].Sample(ClampSamp, float2(0.0, toonV));
+		o.rgb *= toonSamp.rgb;
+	} else if (m.toonFlag == 1) {
+		float mult = lerp(lerp(1.0, SHADOW1_MULT, inShadow1), SHADOW2_MULT, inShadow2);
+		o.rgb *= mult;
+	}
+
+	if (m.spTex >= 0 && (m.spmode == 1 || m.spmode == 2)) {
+		float4 sptex = Textures[NURI(tidx + m.spTex)].Sample(samp, vso.spuv);
+		sptex.rgb = lerp(m.spmode == 1 ? 1 : 0,
+		                 sptex.rgb * m.sphereMulValue.rgb + m.sphereAddValue.rgb,
+		                 m.sphereAddValue.a + m.sphereMulValue.a);
+		o.rgb = (m.spmode == 1) ? o.rgb * sptex.rgb : o.rgb + sptex.rgb;
+		// スフィアマップによる α 破壊を回避
+		if (m.spmode == 1) {
+			float spAEnable = saturate(m.sphereMulValue.a + m.sphereAddValue.a);
+			o.a *= lerp(1.0, sptex.a, spAEnable);
+		}
+	}
+
+	o.rgb += m.specular * Le * pow(max(1e-6, dot(N, H)), m.shininess);
+
+	// 完全 0 のみ discard、中間 α スナップは行わず階調を維持
+	if (o.a < ALPHA_EPSILON) discard;
+
+	o.rgb = ToLinear(o.rgb);
+	// ── 前乗算アルファ出力 ──────────────────────────────────────
+	//   ブレンドは srcBlend=one。result = (rgb·a) + dst·(1-a) となり、
+	//   ストレートアルファ合成と数学的に等価。通常材質の見た目は不変。
+	o.rgb *= o.a;
+	return o;
+}
+
+	#ifdef YRZ_PASS_MMD
+		// ── MMDパス PS（不透明ピクセルのみ。深度書き込み ON）──
+		//   【ToonAnime_27 修正】発光材質の一律 discard を廃止。
+		//   MMDColor が返す最終α で振り分ける:
+		//     ・不透明発光   → α=1 → ここで描画（深度書き込み・遮蔽あり）
+		//     ・半透明発光   → α=0 → OPAQUE_CUT 未満で discard → MMDTrans へ
+		//     ・非発光半透明 → α<OPAQUE_CUT で discard → MMDTrans へ
+		float4 PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
+		{
+			float ta;
+			float4 c = MMDColor(vso, iFace, vface, ta);
+			// 半透明ピクセルは深度を書かない。MMDTrans パスへ委ねる。
+			// （不透明ピクセルだけが深度バッファに書き込まれる）
+			if (c.a < OPAQUE_CUT) discard;
+			return c;
+		}
+	#elif defined(YRZ_PASS_MMDTrans)
+		// ── MMDTransパス PS（非発光の半透明 ＋ 半透明発光。深度書き込み OFF）──
+		//   深度を書き込まないため、交差した発光プレーンが互いを切り取らず、
+		//   また半透明サーフェスが背後の発光ビームを遮蔽しない。
+		//   前乗算ブレンド (srcBlend=one) が:
+		//     ・半透明     → result = rgb·a + dst·(1-a)  （アルファ合成）
+		//     ・半透明発光 → result = emitLin·cov + dst   （加算合成, α=0出力）
+		//   を同一パスで同時に処理する。
+		//   【ToonAnime_27 修正】不透明発光（α=1）は MMD パスで描画済みの
+		//   ため、「c.a ≥ OPAQUE_CUT なら discard」の単一判定で自然に除外。
+		float4 PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
+		{
+			float ta;
+			float4 c = MMDColor(vso, iFace, vface, ta);
+
+			// 不透明ピクセル（不透明発光含む）は MMD パスで描画済み → 除外。
+			// 半透明発光 (c.a==0) と 非発光の半透明 (c.a<OPAQUE_CUT) のみ描画。
+			if (c.a >= OPAQUE_CUT) discard;
+			return c;
+		}
+	#else
+		// ── GBufferパス出力構造体 ──
+		struct PSO {
+			float4 NormalDepth : SV_TARGET0;
+			float4 GBuffer1    : SV_TARGET1;
+			float2 GBuffer2    : SV_TARGET2;
+		};
+
+		#ifndef NO_BARYCENTRICS
+		PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace, float3 bary:SV_Barycentrics) {
+		#else
+		PSO PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) {
+			float3 bary = 0;
+		#endif
+			PSO o = (PSO)0;
+
+			float texA;
+			float4 c = MMDColor(vso, iFace, vface, texA);
+
+			// GBuffer は不透明ピクセルだけを保持する。
+			// HOW: SSAO は透明面の合成後に RasterOut へ適用されるため、AO の基準面を
+			//      完全な不透明ピクセルだけに限定する。
+			// WHY NOT: 半透明面を GBuffer に登録すると、その面で計算した AO が合成済みの
+			//          背景色まで暗くし、背後の人物へ不自然な影が貼り付くため。
+			if (c.a < OPAQUE_CUT) discard;
+
+			o.NormalDepth = float4(vso.normal, vso.viewZ);
+			o.GBuffer1.r  = ModelIndex & 0x00FFFFFF;
+			o.GBuffer1.g  = ModelIndex >> 24;
+			o.GBuffer1.b  = iFace & 0x00FFFFFF;
+			o.GBuffer1.a  = iFace >> 24;
+			o.GBuffer2    = bary.yz;
+
+			return o;
+		}
+	#endif
+
+#endif
+
+
+// ============================================================
+// SSAOパス: レイトレーシングによるアンビエントオクルージョン
+// ============================================================
+// 変更不可（AO_RADIUS / AO_SAMPLES / AO_STRENGTH はPMXモーフから変更）:
+// HOW:
+//   GBuffer の深度からワールド位置を復元し、法線の上半球へ複数の短いレイを
+//   飛ばします。近くで遮られた割合を SSAO テクスチャへ時間平均で保存します。
+// WHY NOT:
+//   TLAS の全ヒットをそのまま遮蔽扱いにしないでください。半透明ポリゴンまで
+//   AO の壁となり、見えている背後の人物に暗い面状の影が出るためです。
+// Codex覚書:
+//   GBuffer 側の半透明除外と AnyHit 側の IgnoreHit は対になる防御。片方だけ
+//   削除しない。テクスチャ α までレイ側で扱う変更は UV 復元方法も必要になる。
+#ifdef YRZ_PASS_SSAO
+#define RAYTRACING
+
+struct SSAOPayload {
+	float t;
+};
+
+float3 SSAOUVtoWorld(float2 uv, float depth)
+{
+	float2 tex = (uv - 0.5) * 2.0;
+	float3 ray;
+	if (Perspective) {
+		ray = ViewMatrix._13_23_33 / ProjectionMatrix._33
+		    + (ViewMatrix._11_21_31 * tex.x / ProjectionMatrix._11)
+		    - (ViewMatrix._12_22_32 * tex.y / ProjectionMatrix._22);
+	} else {
+		float3 lateral = CameraRight * tex.x / ProjectionMatrix._11
+		               - CameraUp    * tex.y / ProjectionMatrix._22;
+		return CameraPosition + lateral + CameraForward * depth;
+	}
+	return CameraPosition + ray * depth;
+}
+
+[shader("raygeneration")]
+void RayGeneration()
+{
+	uint2  pix = DispatchRaysIndex().xy;
+	float2 uv  = (pix + 0.5) / (float2)DispatchRaysDimensions().xy;
+
+	float4 nd = MyNormalDepth.SampleLevel(PointSamp, uv, 0);
+	if (nd.w == 0.0) { SSAO[pix] = 0.0; return; }
+
+	float3 P = SSAOUVtoWorld(uv, nd.w);
+	float3 N = normalize(nd.xyz);
+	float3x3 TBN = ComputeTBN(N);
+
+	float occlusion = 0.0;
+	[loop]
+	for (int i = 0; i < AO_SAMPLES; i++) {
+		float4 xi = Hash4(uint4(pix.x, pix.y, (uint)(iSample) * (uint)AO_SAMPLES + (uint)i, 7919u));
+		float  pdf;
+		float3 dir = SampleCosWeightedHemisphere(TBN, xi.xy, pdf);
+
+		SSAOPayload payload;
+		payload.t = -1.0;
+
+		RayDesc ray;
+		ray.Origin    = P + N * (nd.w * AO_BIAS);
+		ray.Direction = dir;
+		ray.TMin      = 0.0;
+		ray.TMax      = AO_RADIUS;
+		TraceRay(TLAS, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, 0, 0, 0, ray, payload);
+
+		if (payload.t >= 0.0)
+			occlusion += 1.0 - saturate(payload.t / AO_RADIUS);
+	}
+	occlusion /= (float)AO_SAMPLES;
+
+	float prev  = SSAO[pix].r;
+	float alpha = 1.0 / ((float)iSample + 1.0);
+	SSAO[pix]   = lerp(prev, occlusion, alpha);
+}
+
+[shader("miss")]
+void Miss(inout SSAOPayload payload) { }
+
+[shader("closesthit")]
+void ClosestHit(inout SSAOPayload payload, Attribute attr)
+{
+	payload.t = RayTCurrent();
+}
+
+[shader("anyhit")]
+void AnyHit(inout SSAOPayload payload, Attribute attr)
+{
+	// HOW: TLAS には全 PMX 三角形が入るため、材質 α が半透明なら IgnoreHit で
+	//      AO レイを通過させる。GBuffer 側の不透明限定と同じ目的の処理。
+	// WHY NOT: ここでは PNG の画素 α を参照していない。AnyHit には現状 UV がなく、
+	//          不完全な推測でテクスチャを読む方が誤判定を増やすため。
+	uint imo = InstanceID();
+	uint iFace = PrimitiveIndex();
+	MMDMaterial m = MMDMaterials[imo][Faces[imo][iFace]];
+	if (m.diffuse.a < OPAQUE_CUT)
+		IgnoreHit();
+}
+
+#endif
+
+
+// ============================================================
+// Copyパス: RasterOut → RTOutput & SSAO適用
+//           MyGBuffer1/2/NormalDepth → グローバル GBuffer へ転写
+// ============================================================
+// 変更不可:
+// HOW:
+//   RasterOut の色へ SSAO の暗さを掛けて RTOutput へ保存し、モデル番号・面番号・
+//   重心座標・法線深度を後続 PPAL が読めるグローバルバッファへ詰め直します。
+// WHY NOT:
+//   GBuffer のビット結合を単純な float 加算へ変えないでください。24bit を超える
+//   ID を2成分から復元する契約であり、丸め誤差で別モデル・別面になるためです。
+// Codex覚書: PPAL 側の GBuffer デコードと対。レイアウト変更は同時更新が必須。
+#ifdef YRZ_PASS_Copy
+
+struct VSO {
+	float4 position:SV_POSITION;
+	float2 uv:TEXCOORD;
+};
+
+VSO VS( float4 pos : POSITION, float2 uv:TEXCOORD )
+{
+	VSO vso = (VSO)0;
+	vso.position = pos;
+	vso.position.w = 1;
+	vso.uv = uv;
+	return vso;
+}
+
+float4 PS(VSO vso) : SV_TARGET
+{
+	uint2  pix   = (uint2)vso.position.xy;
+	float  ao    = SSAO[pix].r;
+	float4 color = RasterOut[pix];
+
+	color.rgb   *= (1.0 - AO_STRENGTH * ao);
+	RTOutput[pix] = color;
+
+	float4 G1 = MyGBuffer1[pix];
+	GBuffer1[pix].r = (G1.r < 0) ? -1 : (uint)G1.r | ((uint)G1.g << 24);
+	GBuffer1[pix].g = (G1.b < 0) ? -1 : (uint)G1.b | ((uint)G1.a << 24);
+	GBuffer2[pix]    = MyGBuffer2[pix];
+	NormalDepth[pix] = MyNormalDepth[pix];
+
+	discard;
+	return 0;
+}
+
+#endif
+
+
+// ========================================================================
+// Codex向け確認項目（将来コードを変更したとき）
+// ========================================================================
+// テストコメントには「何を確認するか（What）」を記載すること。
+//
+// What: 不透明な目・肌・衣装が発光せず、背後を正しく隠すこと。
+// What: 半透明の髪・レース・ビームが、奥の不透明物を必要以上に隠さないこと。
+// What: 交差する半透明発光プレーンが黒くならず、交差線で欠けないこと。
+// What: PNG の完全透明部に色・輪郭線・深度・AO の影が残らないこと。
+// What: 半透明ポリゴンが SSAO の基準面やレイ遮蔽面にならないこと。
+// What: エッジ無効材質と AutoLuminous 材質に不要な輪郭線が出ないこと。
+// What: PPAL の発光判定と ToonAnime の IsALEmissiveMat が一致すること。
+// What: 透視投影・平行投影の両方で背景と SSAO の位置再構築が正しいこと。
+//
+// コミットログには、上記のどの不具合・要求のために変更したか（Why）を書く。
+// ========================================================================

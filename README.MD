@@ -2,14 +2,13 @@
 
 [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo) 用のアニメ調トゥーンシェーダーです。
 
-現在の推奨版は [`ToonAnime_29.fxdayo`](ToonAnime_29.fxdayo) です。`ToonAnime_29` は `ToonAnime_28` と同じ描画処理を使い、安全に調整できる項目、変更してはいけない箇所、処理の仕組み、保守時の確認事項をコメントとして整理した版です。
+現在の推奨版は [`ToonAnime_31.fxdayo`](ToonAnime_31.fxdayo) です。`ToonAnime_31` は FXAA を含まない `ToonAnime_30` の描画処理を基に、輪郭線、2段階アニメ影、SSAO のユーザー調整値を [`ToonAnime.pmx`](ToonAnime.pmx) のモーフから変更できるようにした版です。
 
 ## 主な機能
 
 - ライト・1号影・2号影による2段階アニメ影
 - バックフェース拡張法によるシルエット輪郭線
 - レイトレーシングによる SSAO
-- 9点サンプリングとサブピクセル補正を使った高品質 FXAA
 - PNG の連続アルファ、アルファマスク、透過テクセルへの明示対応
 - 不透明、通常の半透明、半透明発光をピクセル単位で振り分ける描画
 - AutoLuminous 互換材質の判定
@@ -21,8 +20,12 @@
 
 | ファイル | 内容 |
 | --- | --- |
-| [`ToonAnime_29.fxdayo`](ToonAnime_29.fxdayo) | 現行シェーダー。実装、編集ガイド、Codex向け覚書を収録 |
-| [`history/history.md`](history/history.md) | `ToonAnime_6` から `ToonAnime_28` までの詳細な変更履歴 |
+| [`ToonAnime_31.fxdayo`](ToonAnime_31.fxdayo) | 現行シェーダー。PMXモーフによる17項目のユーザー調整に対応 |
+| [`ToonAnime.pmx`](ToonAnime.pmx) | `ToonAnime_31` のユーザー定義値コントローラー |
+| [`initial.vmd`](initial.vmd) | `ToonAnime_30` と同じ初期値を `ToonAnime.pmx` のフレーム0へ設定 |
+| [`history/ToonAnime_29.fxdayo`](history/ToonAnime_29.fxdayo) | `ToonAnime_28` の描画処理へ編集・保守コメントを追加した版 |
+| [`history/ToonAnime_30.fxdayo`](history/ToonAnime_30.fxdayo) | `ToonAnime_29` から FXAA を削除した版 |
+| [`history/history.md`](history/history.md) | `ToonAnime_6` から `ToonAnime_31` までの詳細な変更履歴 |
 | `PPAL.fxdayo` | AutoLuminous 互換 Bloom を担当する外部ポストプロセス。本ディレクトリには未同梱 |
 | `../hlsl/resources.hlsli` | MikuMikuDayo 側の共有リソース定義。シェーダーから相対参照 |
 | `../hlsl/yrz.hlsli` | MikuMikuDayo 側の共有ヘルパー。シェーダーから相対参照 |
@@ -30,7 +33,9 @@
 ## 動作上の前提
 
 - MikuMikuDayo の `.fxdayo` レンダラーとして読み込むことを前提としています。
-- `ToonAnime_29.fxdayo` から見て `../hlsl/resources.hlsli` と `../hlsl/yrz.hlsli` を参照できる配置が必要です。
+- `ToonAnime_31.fxdayo` から見て `../hlsl/resources.hlsli` と `../hlsl/yrz.hlsli` を参照できる配置が必要です。
+- `ToonAnime.pmx` を MikuMikuDayo に読み込み、モデルへ `initial.vmd` を適用してから使用してください。
+- シェーダーはコントローラーをファイル名 `ToonAnime.pmx` で参照します。同じフォルダへの配置を推奨しますが、MikuMikuDayo がそのモデルを読み込める配置であれば必須ではありません。
 - SSAO はレイトレーシングパス、TLAS、GBuffer、共有カメラ情報を利用します。これらを提供する MikuMikuDayo 環境が必要です。
 - AutoLuminous 互換 Bloom を使用する場合は、対応する `PPAL.fxdayo` を別途用意してください。
 - `PPAL.fxdayo` と併用する場合、AutoLuminous 判定定数と GBuffer レイアウトを両ファイルで一致させる必要があります。
@@ -38,7 +43,7 @@
 ## 描画の流れ
 
 ```text
-BG → GBuffer → Edge → MMD → MMDTrans → SSAO → Copy → FXAA
+BG → GBuffer → Edge → MMD → MMDTrans → SSAO → Copy
 ```
 
 | パス | 役割 |
@@ -50,64 +55,60 @@ BG → GBuffer → Edge → MMD → MMDTrans → SSAO → Copy → FXAA
 | `MMDTrans` | 通常の半透明と半透明発光を、深度を書かずに描画 |
 | `SSAO` | 不透明面を基準に短い AO レイを飛ばし、遮蔽量を計算 |
 | `Copy` | SSAO を色へ適用し、PPAL 用 GBuffer をグローバル領域へ転写 |
-| `FXAA` | 輝度差のある輪郭だけを検出してアンチエイリアス処理 |
 
 ## はじめて調整する場合
 
-1. `ToonAnime_29.fxdayo` を複製し、元のファイルを残します。
-2. 「ユーザー変更可」と書かれた定数だけを変更します。
-3. 一度に1項目だけ、小さな幅で変更します。
+1. `ToonAnime_31.fxdayo` と `ToonAnime.pmx` を MikuMikuDayo から利用できる場所へ配置します。
+2. `ToonAnime.pmx` を読み込み、そのモデルへ `initial.vmd` を適用します。
+3. `ToonAnime.pmx` のモーフを一度に1項目だけ、小さな幅で変更します。
 4. 同じモデル、カメラ、照明、背景で変更前後を比較します。
 5. 不透明物、髪やレース、PNG の穴、発光ビーム、交差する半透明面を確認します。
 
-処理コード、パス定義、リソース名、ブレンド設定を編集して見た目を調整することは避けてください。これらは複数のパスや PPAL と相互に依存しています。
+モーフ値はすべて `0`～`1` です。負のしきい値、広い値域、整数値はシェーダー内で安全な範囲へ変換されます。処理コード、パス定義、リソース名、ブレンド設定を編集して見た目を調整することは避けてください。これらは複数のパスや PPAL と相互に依存しています。
 
 ## ユーザーが変更できる設定
 
 ### 輪郭線
 
-| 定数 | 初期値 | 効果 | 注意 |
-| --- | ---: | --- | --- |
-| `EdgeWidth` | `0.002` | 輪郭線の太さ | まず `0.001`～`0.004` 程度で調整 |
-| `EdgeAlphaThreshold` | `0.9` | 輪郭線を描ける不透明度の下限 | 通常は据え置き |
-| `EDGE_GRAY` | `(0.55, 0.55, 0.55, 1.0)` | `edgeSize < 1` の材質に使う線色 | RGB は `0` が黒、`1` が白 |
+| PMXモーフ | initial.vmd | シェーダー値域 | 初期シェーダー値 | 効果 |
+| --- | ---: | ---: | ---: | --- |
+| `EdgeWidth` | `0.2` | `0`～`0.01` | `0.002` | 輪郭線の太さ |
+| `EdgeAlpha` | `0.9` | `0`～`1` | `0.9` | 輪郭線を描ける不透明度の下限 |
+| `EdgeR` | `0.55` | `0`～`1` | `0.55` | 灰色輪郭の赤成分 |
+| `EdgeG` | `0.55` | `0`～`1` | `0.55` | 灰色輪郭の緑成分 |
+| `EdgeB` | `0.55` | `0`～`1` | `0.55` | 灰色輪郭の青成分 |
+| `EdgeA` | `1.0` | `0`～`1` | `1.0` | 灰色輪郭の不透明度 |
 
 `Edge` パスの深度設定や頂点拡張式を太さ調整に使わないでください。表面との深度競合や、透明部分の黒塗りが再発する可能性があります。
 
 ### 2段階アニメ影
 
-| 定数 | 初期値 | 効果 |
-| --- | ---: | --- |
-| `SHADOW1_THRESHOLD` | `0.1` | ライトから1号影へ切り替わる向き |
-| `SHADOW2_THRESHOLD` | `-0.15` | 1号影から2号影へ切り替わる向き |
-| `SHADOW_SMOOTH` | `0.02` | 影境界の柔らかさ |
-| `SHADOW1_MULT` | `0.65` | 1号影の明るさ |
-| `SHADOW2_MULT` | `0.35` | 2号影の明るさ |
-| `TOON_V_LIGHT` | `0.1` | Toon テクスチャのライト側サンプル位置 |
-| `TOON_V_SHADOW1` | `0.5` | Toon テクスチャの1号影サンプル位置 |
-| `TOON_V_SHADOW2` | `0.9` | Toon テクスチャの2号影サンプル位置 |
+| PMXモーフ | initial.vmd | シェーダー値域 | 初期シェーダー値 | 効果 |
+| --- | ---: | ---: | ---: | --- |
+| `Shadow1Pos` | `0.55` | `-1`～`1` | `0.1` | ライトから1号影へ切り替わる向き |
+| `Shadow2Pos` | `0.425` | `-1`～`1` | `-0.15` | 1号影から2号影へ切り替わる向き |
+| `ShadowSmooth` | 約`0.09548` | `0.001`～`0.2` | `0.02` | 影境界の柔らかさ |
+| `Shadow1Mul` | `0.65` | `0`～`1` | `0.65` | 1号影の明るさ |
+| `Shadow2Mul` | `0.35` | `0`～`1` | `0.35` | 2号影の明るさ |
+| `ToonLight` | `0.1` | `0`～`1` | `0.1` | Toon テクスチャのライト側サンプル位置 |
+| `ToonShadow1` | `0.5` | `0`～`1` | `0.5` | Toon テクスチャの1号影サンプル位置 |
+| `ToonShadow2` | `0.9` | `0`～`1` | `0.9` | Toon テクスチャの2号影サンプル位置 |
 
-影を明るくする場合は `SHADOW1_MULT` と `SHADOW2_MULT` を少し上げます。影境界を柔らかくする場合は `SHADOW_SMOOTH` を少し上げます。`SHADOW1_THRESHOLD` と `SHADOW2_THRESHOLD` の順序、1号影が2号影より明るい関係を保ってください。
+影を明るくする場合は `Shadow1Mul` と `Shadow2Mul` を少し上げます。影境界を柔らかくする場合は `ShadowSmooth` を少し上げます。`Shadow1Pos` が `Shadow2Pos` より大きい関係、1号影が2号影より明るい関係を保ってください。
 
 ### SSAO
 
-| 定数 | 初期値 | 効果 | 負荷・注意 |
-| --- | ---: | --- | --- |
-| `AO_RADIUS` | `5.0` | 遮蔽物を探す最大距離 | 大きすぎると広い範囲が暗くなる |
-| `AO_SAMPLES` | `4` | 1ピクセルあたりのレイ本数 | 増やすと滑らかになるが重くなる |
-| `AO_STRENGTH` | `0.5` | AO の暗さ | 大きすぎると接触部が黒くなる |
-| `AO_BIAS` | `1e-3` | 自己遮蔽を避ける内部補正 | 要コードレビュー。通常は変更しない |
+| PMXモーフ | initial.vmd | シェーダー値域 | 初期シェーダー値 | 効果・注意 |
+| --- | ---: | ---: | ---: | --- |
+| `AORadius` | 約`0.24623` | `0.1`～`20` | `5.0` | 遮蔽物を探す最大距離。大きすぎると広い範囲が暗くなる |
+| `AOSamples` | `0.2` | 整数`1`～`16` | `4` | 1ピクセルあたりのレイ本数。増やすと滑らかになるが重くなる |
+| `AOStrength` | `0.5` | `0`～`1` | `0.5` | AO の暗さ。大きすぎると接触部が黒くなる |
 
-### FXAA
+`AO_BIAS = 1e-3` は自己遮蔽を避ける内部補正であり、PMXモーフからは変更できません。通常は変更せず、変更時はコードレビューと回帰確認を行ってください。
 
-| 定数 | 初期値 | 効果 |
-| --- | ---: | --- |
-| `FXAA_EDGE_THRESHOLD` | `0.063` | エッジ検出感度 |
-| `FXAA_EDGE_THRESHOLD_MIN` | `0.0312` | 暗部での最小検出感度 |
-| `FXAA_SUBPIX_QUALITY` | `0.75` | サブピクセル補正の強さ |
-| `FXAA_MAX_SPAN` | `12.0` | エッジを探索する最大距離 |
+### initial.vmdと値の復元
 
-FXAA は上級者向け設定です。値を無条件に最大化すると、顔、文字、細線、テクスチャまでぼけ、トゥーン表現のシャープさが失われます。
+PMXには既定のモーフ値を保存できないため、初期状態は `initial.vmd` のフレーム0キーで設定します。値域変換後の結果は `ToonAnime_30.fxdayo` の定数値と一致します。例えば、`Shadow2Pos = 0.425` は `-0.15`、`AOSamples = 0.2` は整数 `4` に変換されます。
 
 ## 変更してはいけない箇所
 
@@ -145,7 +146,7 @@ AutoLuminous 方式Aの発光判定は、概ね「スペキュラ色が黒に近
 
 SSAO は透明面の合成後に最終色へ適用されます。そのため半透明面を GBuffer や AO レイの遮蔽面として登録すると、透明面の奥にあるキャラクターまで不自然に暗くなります。
 
-`ToonAnime_29` では次の二重対策を行います。
+`ToonAnime_31` では、`ToonAnime_28` から継承した次の二重対策を行います。
 
 1. `GBuffer` は `c.a >= OPAQUE_CUT` の不透明ピクセルだけを保存します。
 2. SSAO の `AnyHit` は、材質アルファが `OPAQUE_CUT` 未満の三角形を `IgnoreHit()` で通過させます。
@@ -164,7 +165,6 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 - エッジ無効材質と AutoLuminous 材質に不要な輪郭線が出ない
 - PPAL の発光判定と `IsALEmissiveMat` が一致する
 - 透視投影と平行投影の両方で背景と SSAO の位置再構築が正しい
-- 平坦部は FXAA でぼけず、輪郭のジャギーだけが軽減される
 
 ## 開発時のコメントと履歴
 
@@ -196,6 +196,8 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 | `27` | 不透明発光と半透明発光を分離し、目の発光・透過回帰を修正 |
 | `28` | 半透明面を GBuffer と SSAO 遮蔽から除外 |
 | `29` | `28` と同じコードへ編集ガイドと保守コメントを追加 |
+| `30` | FXAAパス、FXAA定数、FXAAシェーダー本体を削除 |
+| `31` | 17個のユーザー調整値を `ToonAnime.pmx` のモーフ制御へ変更し、`initial.vmd` を追加 |
 
 完全な履歴は [`history/history.md`](history/history.md) を参照してください。
 
@@ -204,4 +206,3 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 - `ToonAnime_7`、`8`、`10` は履歴フォルダに存在しないため、個別の変更内容は未確認です。
 - `ToonAnime_16` のリムライトは、`ToonAnime_15` をベースに再構成した `17` 以降へ継承されていません。
 - `ToonAnime_mob_01.fxdayo` は連番版ではないため、連番の変更履歴には含めていません。
-
