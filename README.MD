@@ -2,14 +2,11 @@
 
 [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo) 用のアニメ調トゥーンシェーダーです。
 
-<<<<<<< HEAD
-
 現在の推奨版は [`ToonAnime_31.fxdayo`](ToonAnime_31.fxdayo) です。
 
 ## 作成
 
 CODEX,Claude code
->>>>>>> aeaeeed610312f87b1e6b3c89faddaa9642f6f7a
 
 ## 主な機能
 
