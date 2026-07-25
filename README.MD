@@ -2,7 +2,13 @@
 
 [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo) 用のアニメ調トゥーンシェーダーです。
 
+<<<<<<< HEAD
 現在の推奨版は [`ToonAnime_31.fxdayo`](ToonAnime_31.fxdayo) です。`ToonAnime_31` は FXAA を含まない `ToonAnime_30` の描画処理を基に、輪郭線、2段階アニメ影、SSAO のユーザー調整値を [`ToonAnime.pmx`](ToonAnime.pmx) のモーフから変更できるようにした版です。
+=======
+現在の推奨版は [`ToonAnime_29.fxdayo`](ToonAnime_29.fxdayo) です。`ToonAnime_29` は `ToonAnime_28` と同じ描画処理を使い、安全に調整できる項目、変更してはいけない箇所、処理の仕組み、保守時の確認事項をコメントとして整理した版です。
+## 作成
+CODEX,Claude code
+>>>>>>> aeaeeed610312f87b1e6b3c89faddaa9642f6f7a
 
 ## 主な機能
 
