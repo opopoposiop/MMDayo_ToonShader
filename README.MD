@@ -31,7 +31,7 @@ CODEX,Claude code
 | [`history/ToonAnime_29.fxdayo`](history/ToonAnime_29.fxdayo) | `ToonAnime_28` の描画処理へ編集・保守コメントを追加した版 |
 | [`history/ToonAnime_30.fxdayo`](history/ToonAnime_30.fxdayo) | `ToonAnime_29` から FXAA を削除した版 |
 | [`history/history.md`](history/history.md) | `ToonAnime_6` から `ToonAnime_32` までの詳細な変更履歴 |
-| `PPAL.fxdayo` | AutoLuminous 互換 Bloom を担当する外部ポストプロセス。本ディレクトリには未同梱 |
+| [`PPAL.fxdayo`](https://github.com/opopoposiop/MMDayo_AL) | AutoLuminous 互換 Bloom を担当する外部ポストプロセス。本ディレクトリには未同梱 |
 | `../hlsl/resources.hlsli` | MikuMikuDayo 側の共有リソース定義。シェーダーから相対参照 |
 | `../hlsl/yrz.hlsli` | MikuMikuDayo 側の共有ヘルパー。シェーダーから相対参照 |
 
