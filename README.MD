@@ -2,13 +2,11 @@
 
 [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo) 用のアニメ調トゥーンシェーダーです。
 
-<<<<<<< HEAD
-現在の推奨版は [`ToonAnime_31.fxdayo`](ToonAnime_31.fxdayo) です。`ToonAnime_31` は FXAA を含まない `ToonAnime_30` の描画処理を基に、輪郭線、2段階アニメ影、SSAO のユーザー調整値を [`ToonAnime.pmx`](ToonAnime.pmx) のモーフから変更できるようにした版です。
-=======
-現在の推奨版は [`ToonAnime_29.fxdayo`](ToonAnime_29.fxdayo) です。`ToonAnime_29` は `ToonAnime_28` と同じ描画処理を使い、安全に調整できる項目、変更してはいけない箇所、処理の仕組み、保守時の確認事項をコメントとして整理した版です。
+現在の推奨版は [`ToonAnime_32.fxdayo`](ToonAnime_32.fxdayo) です。`ToonAnime_32` は `ToonAnime_31` を基に、Edge・1号影・2号影の色をHSV形式で調整できるようにし、23個のPMXモーフを「目・まゆ・リップ・その他」へ整理した版です。
+
 ## 作成
+
 CODEX,Claude code
->>>>>>> aeaeeed610312f87b1e6b3c89faddaa9642f6f7a
 
 ## 主な機能
 
@@ -26,12 +24,13 @@ CODEX,Claude code
 
 | ファイル | 内容 |
 | --- | --- |
-| [`ToonAnime_31.fxdayo`](ToonAnime_31.fxdayo) | 現行シェーダー。PMXモーフによる17項目のユーザー調整に対応 |
-| [`ToonAnime.pmx`](ToonAnime.pmx) | `ToonAnime_31` のユーザー定義値コントローラー |
-| [`initial.vmd`](initial.vmd) | `ToonAnime_30` と同じ初期値を `ToonAnime.pmx` のフレーム0へ設定 |
+| [`ToonAnime_32.fxdayo`](ToonAnime_32.fxdayo) | 現行シェーダー。HSVカラーと23項目のPMXモーフ調整に対応 |
+| [`ToonAnime_31.fxdayo`](ToonAnime_31.fxdayo) | Edge色がRGB形式で、影色追加前の旧版 |
+| [`ToonAnime.pmx`](ToonAnime.pmx) | `ToonAnime_32` のユーザー定義値コントローラー |
+| [`initial.vmd`](initial.vmd) | 31版と同じ見た目になる初期値を23モーフのフレーム0へ設定 |
 | [`history/ToonAnime_29.fxdayo`](history/ToonAnime_29.fxdayo) | `ToonAnime_28` の描画処理へ編集・保守コメントを追加した版 |
 | [`history/ToonAnime_30.fxdayo`](history/ToonAnime_30.fxdayo) | `ToonAnime_29` から FXAA を削除した版 |
-| [`history/history.md`](history/history.md) | `ToonAnime_6` から `ToonAnime_31` までの詳細な変更履歴 |
+| [`history/history.md`](history/history.md) | `ToonAnime_6` から `ToonAnime_32` までの詳細な変更履歴 |
 | `PPAL.fxdayo` | AutoLuminous 互換 Bloom を担当する外部ポストプロセス。本ディレクトリには未同梱 |
 | `../hlsl/resources.hlsli` | MikuMikuDayo 側の共有リソース定義。シェーダーから相対参照 |
 | `../hlsl/yrz.hlsli` | MikuMikuDayo 側の共有ヘルパー。シェーダーから相対参照 |
@@ -39,7 +38,7 @@ CODEX,Claude code
 ## 動作上の前提
 
 - MikuMikuDayo の `.fxdayo` レンダラーとして読み込むことを前提としています。
-- `ToonAnime_31.fxdayo` から見て `../hlsl/resources.hlsli` と `../hlsl/yrz.hlsli` を参照できる配置が必要です。
+- `ToonAnime_32.fxdayo` から見て `../hlsl/resources.hlsli` と `../hlsl/yrz.hlsli` を参照できる配置が必要です。
 - `ToonAnime.pmx` を MikuMikuDayo に読み込み、モデルへ `initial.vmd` を適用してから使用してください。
 - シェーダーはコントローラーをファイル名 `ToonAnime.pmx` で参照します。同じフォルダへの配置を推奨しますが、MikuMikuDayo がそのモデルを読み込める配置であれば必須ではありません。
 - SSAO はレイトレーシングパス、TLAS、GBuffer、共有カメラ情報を利用します。これらを提供する MikuMikuDayo 環境が必要です。
@@ -64,13 +63,24 @@ BG → GBuffer → Edge → MMD → MMDTrans → SSAO → Copy
 
 ## はじめて調整する場合
 
-1. `ToonAnime_31.fxdayo` と `ToonAnime.pmx` を MikuMikuDayo から利用できる場所へ配置します。
+1. `ToonAnime_32.fxdayo` と `ToonAnime.pmx` を MikuMikuDayo から利用できる場所へ配置します。
 2. `ToonAnime.pmx` を読み込み、そのモデルへ `initial.vmd` を適用します。
 3. `ToonAnime.pmx` のモーフを一度に1項目だけ、小さな幅で変更します。
 4. 同じモデル、カメラ、照明、背景で変更前後を比較します。
 5. 不透明物、髪やレース、PNG の穴、発光ビーム、交差する半透明面を確認します。
 
 モーフ値はすべて `0`～`1` です。負のしきい値、広い値域、整数値はシェーダー内で安全な範囲へ変換されます。処理コード、パス定義、リソース名、ブレンド設定を編集して見た目を調整することは避けてください。これらは複数のパスや PPAL と相互に依存しています。
+
+### モーフグループ
+
+| PMXグループ | 収録する設定 |
+| --- | --- |
+| `目` | `EdgeWidth`、`EdgeAlpha`、`EdgeH/S/V/A` |
+| `まゆ` | `Shadow1Pos`、`Shadow1Mul`、`Shadow1H/S/V`、`ToonShadow1` |
+| `リップ` | `Shadow2Pos`、`Shadow2Mul`、`Shadow2H/S/V`、`ToonShadow2` |
+| `その他` | `ShadowSmooth`、`ToonLight`、`AORadius`、`AOSamples`、`AOStrength` |
+
+HSVの `H` は色相、`S` は彩度、`V` は明度です。`S = 0` の間は無彩色になるため、`H` を変更しても見た目は変わりません。色を付ける場合は `H` を選んだ後に `S` を上げてください。
 
 ## ユーザーが変更できる設定
 
@@ -80,9 +90,9 @@ BG → GBuffer → Edge → MMD → MMDTrans → SSAO → Copy
 | --- | ---: | ---: | ---: | --- |
 | `EdgeWidth` | `0.2` | `0`～`0.01` | `0.002` | 輪郭線の太さ |
 | `EdgeAlpha` | `0.9` | `0`～`1` | `0.9` | 輪郭線を描ける不透明度の下限 |
-| `EdgeR` | `0.55` | `0`～`1` | `0.55` | 灰色輪郭の赤成分 |
-| `EdgeG` | `0.55` | `0`～`1` | `0.55` | 灰色輪郭の緑成分 |
-| `EdgeB` | `0.55` | `0`～`1` | `0.55` | 灰色輪郭の青成分 |
+| `EdgeH` | `0.0` | `0`～`1` | `0.0` | 灰色輪郭の色相 |
+| `EdgeS` | `0.0` | `0`～`1` | `0.0` | 灰色輪郭の彩度 |
+| `EdgeV` | `0.55` | `0`～`1` | `0.55` | 灰色輪郭の明度 |
 | `EdgeA` | `1.0` | `0`～`1` | `1.0` | 灰色輪郭の不透明度 |
 
 `Edge` パスの深度設定や頂点拡張式を太さ調整に使わないでください。表面との深度競合や、透明部分の黒塗りが再発する可能性があります。
@@ -96,11 +106,17 @@ BG → GBuffer → Edge → MMD → MMDTrans → SSAO → Copy
 | `ShadowSmooth` | 約`0.09548` | `0.001`～`0.2` | `0.02` | 影境界の柔らかさ |
 | `Shadow1Mul` | `0.65` | `0`～`1` | `0.65` | 1号影の明るさ |
 | `Shadow2Mul` | `0.35` | `0`～`1` | `0.35` | 2号影の明るさ |
+| `Shadow1H` | `0.0` | `0`～`1` | `0.0` | 1号影の色相 |
+| `Shadow1S` | `0.0` | `0`～`1` | `0.0` | 1号影の彩度 |
+| `Shadow1V` | `1.0` | `0`～`1` | `1.0` | 1号影の色乗算明度 |
+| `Shadow2H` | `0.0` | `0`～`1` | `0.0` | 2号影の色相 |
+| `Shadow2S` | `0.0` | `0`～`1` | `0.0` | 2号影の彩度 |
+| `Shadow2V` | `1.0` | `0`～`1` | `1.0` | 2号影の色乗算明度 |
 | `ToonLight` | `0.1` | `0`～`1` | `0.1` | Toon テクスチャのライト側サンプル位置 |
 | `ToonShadow1` | `0.5` | `0`～`1` | `0.5` | Toon テクスチャの1号影サンプル位置 |
 | `ToonShadow2` | `0.9` | `0`～`1` | `0.9` | Toon テクスチャの2号影サンプル位置 |
 
-影を明るくする場合は `Shadow1Mul` と `Shadow2Mul` を少し上げます。影境界を柔らかくする場合は `ShadowSmooth` を少し上げます。`Shadow1Pos` が `Shadow2Pos` より大きい関係、1号影が2号影より明るい関係を保ってください。
+影を明るくする場合は `Shadow1Mul` と `Shadow2Mul` を少し上げます。色味を付ける場合は各影の `H` を選び、`S` を上げます。`V = 1` は色による追加減光なしです。影境界を柔らかくする場合は `ShadowSmooth` を少し上げます。`Shadow1Pos` が `Shadow2Pos` より大きい関係、1号影が2号影より明るい関係を保ってください。
 
 ### SSAO
 
@@ -114,7 +130,7 @@ BG → GBuffer → Edge → MMD → MMDTrans → SSAO → Copy
 
 ### initial.vmdと値の復元
 
-PMXには既定のモーフ値を保存できないため、初期状態は `initial.vmd` のフレーム0キーで設定します。値域変換後の結果は `ToonAnime_30.fxdayo` の定数値と一致します。例えば、`Shadow2Pos = 0.425` は `-0.15`、`AOSamples = 0.2` は整数 `4` に変換されます。
+PMXには既定のモーフ値を保存できないため、初期状態は `initial.vmd` のフレーム0キーで設定します。Edgeは `H=0、S=0、V=0.55` で31版の灰色を再現し、両方の影色は `H=0、S=0、V=1` の白にして追加の色変化を発生させません。その他の値域変換後の結果も31版と一致します。例えば、`Shadow2Pos = 0.425` は `-0.15`、`AOSamples = 0.2` は整数 `4` に変換されます。
 
 ## 変更してはいけない箇所
 
@@ -152,7 +168,7 @@ AutoLuminous 方式Aの発光判定は、概ね「スペキュラ色が黒に近
 
 SSAO は透明面の合成後に最終色へ適用されます。そのため半透明面を GBuffer や AO レイの遮蔽面として登録すると、透明面の奥にあるキャラクターまで不自然に暗くなります。
 
-`ToonAnime_31` では、`ToonAnime_28` から継承した次の二重対策を行います。
+`ToonAnime_32` では、`ToonAnime_28` から継承した次の二重対策を行います。
 
 1. `GBuffer` は `c.a >= OPAQUE_CUT` の不透明ピクセルだけを保存します。
 2. SSAO の `AnyHit` は、材質アルファが `OPAQUE_CUT` 未満の三角形を `IgnoreHit()` で通過させます。
@@ -204,6 +220,7 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 | `29` | `28` と同じコードへ編集ガイドと保守コメントを追加 |
 | `30` | FXAAパス、FXAA定数、FXAAシェーダー本体を削除 |
 | `31` | 17個のユーザー調整値を `ToonAnime.pmx` のモーフ制御へ変更し、`initial.vmd` を追加 |
+| `32` | Edge色をHSV化し、1号影・2号影のHSV色を追加。23モーフを4グループへ整理 |
 
 完全な履歴は [`history/history.md`](history/history.md) を参照してください。
 

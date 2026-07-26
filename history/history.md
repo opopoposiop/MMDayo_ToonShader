@@ -1,6 +1,6 @@
 # ToonAnime 変更履歴
 
-`ToonAnime_6.fxdayo` から `ToonAnime_28.fxdayo` まで、対象フォルダに現存する版をファイル更新日時順（同時にバージョン番号順）で整理した。
+`ToonAnime_6.fxdayo` から `ToonAnime_32.fxdayo` まで、対象フォルダと親フォルダに現存する版をファイル更新日時順（同時にバージョン番号順）で整理した。
 
 > 注記
 >
@@ -175,3 +175,12 @@
 - 透明な最小構成のユーザー定義値コントローラー `ToonAnime.pmx` を追加。
 - `ToonAnime_30` の定数値をフレーム0で復元する `initial.vmd` を追加。
 - `AO_BIAS` など「要コードレビュー」の内部値はPMX制御の対象外とし、30版の値を維持。
+
+## 2026-07-26 — ToonAnime_32.fxdayo
+
+- Edgeの色指定を `EdgeR/G/B` から `EdgeH/S/V` へ変更し、HLSL内でHSVからRGBへ変換する方式を追加。
+- 1号影へ `Shadow1H/S/V`、2号影へ `Shadow2H/S/V` を追加し、Toonテクスチャまたは明るさ倍率を適用した後の拡散色へ影色を乗算。
+- 初期Edge色を `H=0、S=0、V=0.55`、両方の初期影色を白の `H=0、S=0、V=1` とし、`initial.vmd` 適用時に31版の見た目を維持。
+- `ToonAnime.pmx` と `initial.vmd` を17モーフから23モーフへ更新。
+- PMXのモーフパネルを「目=Edge関係」「まゆ=Shadow1関係」「リップ=Shadow2関係」「その他=残りの設定」へ再編。
+- `EdgeA`、影の明るさ倍率、影境界、Toon参照位置、SSAO設定は31版の値域と初期値を継承。
