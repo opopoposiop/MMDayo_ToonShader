@@ -1,12 +1,39 @@
 # ToonAnime 変更履歴
 
-`ToonAnime_6.fxdayo` から `ToonAnime_32.fxdayo` まで、対象フォルダと親フォルダに現存する版をファイル更新日時順（同時にバージョン番号順）で整理した。
+`ToonAnime_2.fxdayo` から `ToonAnime_32.fxdayo` まで、対象フォルダと親フォルダに現存する版をファイル更新日時順（同時にバージョン番号順）で整理した。
 
 > 注記
 >
-> - `ToonAnime_7.fxdayo`、`ToonAnime_8.fxdayo`、`ToonAnime_10.fxdayo` は対象フォルダに存在しないため、個別の変更内容は確認できない。
+> - `ToonAnime_5.fxdayo`、`ToonAnime_7.fxdayo`、`ToonAnime_8.fxdayo`、`ToonAnime_10.fxdayo` は対象フォルダに存在しないため、個別の変更内容は確認できない。
 > - `ToonAnime_9.fxdayo` はファイル内の記述では `ToonAnime_8.fxdayo` ベース、`ToonAnime_11.fxdayo` は `ToonAnime_9.fxdayo` ベースである。
 > - `ToonAnime_mob_01.fxdayo` は連番版ではないため、この履歴の対象外とした。
+
+## 2026-03-25 — ToonAnime_2.fxdayo
+
+- `Preview.fxdayo` をベースに、`Subayai.fxdayo` の構成を参照したアニメ調トゥーンシェーダーとして構築。
+- `smoothstep` による2トーン影、青みを持つ `ShadowTint`、段階的なハードスペキュラ、フレネル型リムライトを実装。
+- GBufferの法線差と深度差から輪郭を検出する、画面空間の `Outline` パスを追加。
+- 高輝度抽出、水平・垂直の7tap分離型ガウスブラーを行う `BrightExtract → DiffusionX → DiffusionY` 構成を実装。
+- `BrightTex` と `DiffusionBuf` を半解像度、カラーRTVをFP16として、グロー処理のメモリ帯域を削減。
+- 最終段へループなしのFXAAを追加し、同じパスでGBufferとNormalDepthを共有バッファへ転送。
+- OIDN入力を生成する `DENOISE` パスを収録。
+
+## 2026-03-25 — ToonAnime_3.fxdayo
+
+- 個別の `Outline`、`BrightExtract`、`DiffusionX`、`DiffusionY` パスを廃止し、彩度・拡散グロー・輪郭処理を単一の `AnimeEffect` パスへ再編。
+- `AnimeEffect` の出力先として `TempBuffer` を追加し、彩度倍率 `1.55`、13点近似ガウシアン、深度・法線Sobelエッジを適用。
+- 専用のハードスペキュラとリムライトを外し、MMD標準に近いトゥーンテクスチャ処理と通常のスペキュラ計算へモデル描画を簡素化。
+- FXAAを `TempBuffer` 入力へ変更し、輝度差検出とサブピクセル補正で輪郭を保持しながらアンチエイリアス処理。
+- FXAA後に独立した `Copy` パスを置き、最終色、GBuffer、NormalDepthの転送を分離。
+
+## 2026-03-25 — ToonAnime_4.fxdayo
+
+- `AnimeEffect` パスと `TempBuffer` を削除し、細輪郭線とDiffusionを `Copy` パス内で直接合成する構成へ変更。
+- 独立した輪郭パスのブレンド設定で画面が黒くなる問題を避けるため、`Copy` から `RTOutput` へ直接書き込む方式を採用。
+- 背景側へ線を広げず、モデル側だけにシルエット・法線差・深度差を適用する1ピクセル輪郭へ変更。
+- Diffusionを `RasterOut` の7×7ガウス高輝度サンプルから生成し、黒い輪郭がブルームへ混入しないよう処理順を整理。
+- モデル描画へ彩度倍率 `ToonSaturationBoost = 1.8` を追加。
+- FXAAを `Copy` の後段へ移し、輪郭とブルームを含む `RTOutput` 全体へ適用。
 
 ## 2026-03-25 — ToonAnime_6.fxdayo
 

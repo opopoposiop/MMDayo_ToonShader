@@ -30,7 +30,7 @@ CODEX,Claude code
 | [`initial.vmd`](initial.vmd) | 31版と同じ見た目になる初期値を23モーフのフレーム0へ設定 |
 | [`history/ToonAnime_29.fxdayo`](history/ToonAnime_29.fxdayo) | `ToonAnime_28` の描画処理へ編集・保守コメントを追加した版 |
 | [`history/ToonAnime_30.fxdayo`](history/ToonAnime_30.fxdayo) | `ToonAnime_29` から FXAA を削除した版 |
-| [`history/history.md`](history/history.md) | `ToonAnime_6` から `ToonAnime_32` までの詳細な変更履歴 |
+| [`history/history.md`](history/history.md) | `ToonAnime_2` から `ToonAnime_32` までの詳細な変更履歴 |
 | [`PPAL.fxdayo`](https://github.com/opopoposiop/MMDayo_AL) | AutoLuminous 互換 Bloom を担当する外部ポストプロセス。本ディレクトリには未同梱 |
 | `../hlsl/resources.hlsli` | MikuMikuDayo 側の共有リソース定義。シェーダーから相対参照 |
 | `../hlsl/yrz.hlsli` | MikuMikuDayo 側の共有ヘルパー。シェーダーから相対参照 |
@@ -226,6 +226,6 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 
 ### 履歴上の注意
 
-- `ToonAnime_7`、`8`、`10` は履歴フォルダに存在しないため、個別の変更内容は未確認です。
+- `ToonAnime_5`、`7`、`8`、`10` は履歴フォルダに存在しないため、個別の変更内容は未確認です。
 - `ToonAnime_16` のリムライトは、`ToonAnime_15` をベースに再構成した `17` 以降へ継承されていません。
 - `ToonAnime_mob_01.fxdayo` は連番版ではないため、連番の変更履歴には含めていません。
