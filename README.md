@@ -226,3 +226,14 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 
 - `ToonAnime_5`、`7`、`8`、`10` はアーカイブに存在しないため、個別の変更内容は未確認です。
 - `ToonAnime_16` のリムライトは、`ToonAnime_15` をベースに再構成した `17` 以降へ継承されていません。
+
+```
+
+## 謝辞・関連プロジェクト
+
+- [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo)
+  `.fxdayo` レンダラーおよび共有 HLSL 環境を利用しています。
+- [MMDayo_AL](https://github.com/opopoposiop/MMDayo_AL)
+  Bloom 用の PPAL ポストプロセスとして連携できます。
+- [AutoLuminous](https://www.nicovideo.jp/watch/sm16087751)
+  そぼろ氏の必須MME 互換動作の実装にあたり、仕様および動作を参考にしています
