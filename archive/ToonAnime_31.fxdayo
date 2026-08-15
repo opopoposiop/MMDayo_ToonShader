@@ -14,7 +14,7 @@
 // 【コメントの読み方】
 //   HOW     : コードが目的を実現する方法。
 //   WHY NOT : 一見簡単でも採用しなかった方法と、その理由。
-//   Codex   : 将来の自動編集で守るべき契約・確認事項。
+//   保守上の注意   : 将来の自動編集で守るべき契約・確認事項。
 //
 // 【テストについて】
 //   このファイルにはテストコードはありません。テストを追加する場合、その
@@ -26,10 +26,10 @@
 //   を記録してください。例:
 //   "半透明面が背後の人物へ AO の影を落としていたため、SSAO 遮蔽から除外"
 //
-// Codex覚書:
+// 保守メモ:
 //   - ToonAnime_31 は 30 のユーザー調整値をPMXモーフ制御へ変更。
 //   - 修正依頼がコメント整備だけなら、式・定数値・リソース名・パス順を変えない。
-//   - コード変更時は、末尾の「Codex向け確認項目」をすべて再確認する。
+//   - コード変更時は、末尾の「変更時の確認項目」をすべて再確認する。
 // ========================================================================
 
 #include "../hlsl/resources.hlsli"
@@ -55,7 +55,7 @@ using namespace YRZ;
 //   また、SSAO を透明面の合成前に単純適用するだけでは、透明面の奥にある色へ
 //   不自然な暗さが乗るため、GBuffer と AO レイの両方で透明面を除外しています。
 //
-// Codex覚書:
+// 保守メモ:
 //   パス名は YRZ_PASS_* 条件と一致させる。RasterOut/ZBuf/GBuffer/SSAO の
 //   名前・形式・バインド方法を変える場合は、全参照箇所を同時に監査すること。
 [YRZFX]
@@ -283,7 +283,7 @@ static const uint   MAT_FLAG_EDGE       = 0x10u; // 変更不可
 // WHY NOT:
 //   ToonAnime 側だけ変更すると、通常描画での発光扱いと PPAL の Bloom 判定が
 //   食い違い、目が発光する、発光面に輪郭が出る、といった不整合が起きます。
-// Codex覚書: 変更依頼時は PPAL 側の同名・同目的定数も検索し、同時更新を提案する。
+// 保守メモ: 変更依頼時は PPAL 側の同名・同目的定数も検索し、同時更新を提案する。
 static const float  AL_SPEC_THRESHOLD  = 0.05;  // 変更不可（PPALと同期）
 static const float  AL_SHIN_THRESHOLD  = 100.0; // 変更不可（PPALと同期）
 static const float  AL_MAX_OVERBRIGHT  = 16.0;  // 変更不可（PPALと同期）
@@ -436,7 +436,7 @@ float4 PS(VSO vso) : SV_TARGET
 // WHY NOT:
 //   PNG の透明部分を無視して面全体へ線を描くと、網・レース・髪の隙間が黒く
 //   塗り潰されます。発光材質へ線を描くと、光の板に不自然な外枠が出ます。
-// Codex覚書: discard 条件を減らす変更では ToonAnime_22～23 の回帰理由を確認する。
+// 保守メモ: discard 条件を減らす変更では ToonAnime_22～23 の回帰理由を確認する。
 #ifdef YRZ_PASS_Edge
 struct VSO {
 	float4 position:SV_POSITION;
@@ -508,7 +508,7 @@ float4 PS(VSO vso, uint iFace:SV_PrimitiveID) : SV_TARGET
 //   不透明部と半透明部が共存するため、ピクセル単位でなければ深度が破綻します。
 //   また、通常色を前乗算せず srcBlend=one へ渡すと半透明色が明るくなりすぎます。
 //
-// Codex覚書:
+// 保守メモ:
 //   MMDColor の戻り値 .a は色の透明度であると同時にパス振り分け契約。
 //   戻り値や discard を変える場合は MMD/MMDTrans/GBuffer の3箇所を同時に監査。
 #if defined(YRZ_PASS_MMD) || defined(YRZ_PASS_MMDTrans) || defined(YRZ_PASS_GBuffer)
@@ -742,7 +742,7 @@ float4 MMDColor(VSO vso, uint iFace, bool vface, out float texAlpha)
 // WHY NOT:
 //   TLAS の全ヒットをそのまま遮蔽扱いにしないでください。半透明ポリゴンまで
 //   AO の壁となり、見えている背後の人物に暗い面状の影が出るためです。
-// Codex覚書:
+// 保守メモ:
 //   GBuffer 側の半透明除外と AnyHit 側の IgnoreHit は対になる防御。片方だけ
 //   削除しない。テクスチャ α までレイ側で扱う変更は UV 復元方法も必要になる。
 #ifdef YRZ_PASS_SSAO
@@ -845,7 +845,7 @@ void AnyHit(inout SSAOPayload payload, Attribute attr)
 // WHY NOT:
 //   GBuffer のビット結合を単純な float 加算へ変えないでください。24bit を超える
 //   ID を2成分から復元する契約であり、丸め誤差で別モデル・別面になるためです。
-// Codex覚書: PPAL 側の GBuffer デコードと対。レイアウト変更は同時更新が必須。
+// 保守メモ: PPAL 側の GBuffer デコードと対。レイアウト変更は同時更新が必須。
 #ifdef YRZ_PASS_Copy
 
 struct VSO {
@@ -885,7 +885,7 @@ float4 PS(VSO vso) : SV_TARGET
 
 
 // ========================================================================
-// Codex向け確認項目（将来コードを変更したとき）
+// 変更時の確認項目（将来コードを変更したとき）
 // ========================================================================
 // テストコメントには「何を確認するか（What）」を記載すること。
 //

@@ -6,7 +6,6 @@
 >
 > - `ToonAnime_5.fxdayo`、`ToonAnime_7.fxdayo`、`ToonAnime_8.fxdayo`、`ToonAnime_10.fxdayo` は対象フォルダに存在しないため、個別の変更内容は確認できない。
 > - `ToonAnime_9.fxdayo` はファイル内の記述では `ToonAnime_8.fxdayo` ベース、`ToonAnime_11.fxdayo` は `ToonAnime_9.fxdayo` ベースである。
-> - `ToonAnime_mob_01.fxdayo` は連番版ではないため、この履歴の対象外とした。
 
 ## 2026-03-25 — ToonAnime_2.fxdayo
 
@@ -184,7 +183,7 @@
 
 - `ToonAnime_28` の描画コードと定数値を維持したまま、編集・保守用のコメントを整理。
 - 「ユーザー変更可」「変更不可」「要コードレビュー」の境界を明記。
-- 各処理へ `HOW`、`WHY NOT`、Codex向け覚書を追加し、パス間の契約と変更時の注意点を文書化。
+- 各処理へ `HOW`、`WHY NOT`、保守メモを追加し、パス間の契約と変更時の注意点を文書化。
 - 描画順、透過・発光、GBuffer、SSAO、PPAL連携の確認項目をファイル末尾へ追加。
 
 ## 2026-07-25 — ToonAnime_30.fxdayo

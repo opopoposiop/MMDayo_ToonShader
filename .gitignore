@@ -1,0 +1,14 @@
+.DS_Store
+Thumbs.db
+
+# Local validation output
+*.log
+captures/
+screenshots/
+
+# Local agent and editor state
+.codex/
+.agents/
+.idea/
+.vscode/
+*.local.*

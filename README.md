@@ -4,10 +4,6 @@
 
 現在の推奨版は [`ToonAnime_32.fxdayo`](ToonAnime_32.fxdayo) です。`ToonAnime_32` は `ToonAnime_31` を基に、Edge・1号影・2号影の色をHSV形式で調整できるようにし、23個のPMXモーフを「目・まゆ・リップ・その他」へ整理した版です。
 
-## 作成
-
-CODEX,Claude code
-
 ## 主な機能
 
 - ライト・1号影・2号影による2段階アニメ影
@@ -15,7 +11,7 @@ CODEX,Claude code
 - レイトレーシングによる SSAO
 - PNG の連続アルファ、アルファマスク、透過テクセルへの明示対応
 - 不透明、通常の半透明、半透明発光をピクセル単位で振り分ける描画
-- AutoLuminous 互換材質の判定
+- AutoLuminous 方式を参考にした発光材質判定
 - PPAL 用のモデル・面・重心座標・法線深度 GBuffer 出力
 
 半透明面が深度を書いて発光ビームを消す問題、発光面の重なりが黒くなる問題、目材質が誤って発光・透過する問題、透明面が SSAO の不自然な影を作る問題への対策を含みます。
@@ -25,12 +21,12 @@ CODEX,Claude code
 | ファイル | 内容 |
 | --- | --- |
 | [`ToonAnime_32.fxdayo`](ToonAnime_32.fxdayo) | 現行シェーダー。HSVカラーと23項目のPMXモーフ調整に対応 |
-| [`ToonAnime_31.fxdayo`](ToonAnime_31.fxdayo) | Edge色がRGB形式で、影色追加前の旧版 |
+| [`ToonAnime_31.fxdayo`](archive/ToonAnime_31.fxdayo) | Edge色がRGB形式で、影色追加前の旧版 |
 | [`ToonAnime.pmx`](ToonAnime.pmx) | `ToonAnime_32` のユーザー定義値コントローラー |
 | [`initial.vmd`](initial.vmd) | 31版と同じ見た目になる初期値を23モーフのフレーム0へ設定 |
-| [`history/ToonAnime_29.fxdayo`](history/ToonAnime_29.fxdayo) | `ToonAnime_28` の描画処理へ編集・保守コメントを追加した版 |
-| [`history/ToonAnime_30.fxdayo`](history/ToonAnime_30.fxdayo) | `ToonAnime_29` から FXAA を削除した版 |
-| [`history/history.md`](history/history.md) | `ToonAnime_2` から `ToonAnime_32` までの詳細な変更履歴 |
+| [`archive/ToonAnime_29.fxdayo`](archive/ToonAnime_29.fxdayo) | `ToonAnime_28` の描画処理へ編集・保守コメントを追加した版 |
+| [`archive/ToonAnime_30.fxdayo`](archive/ToonAnime_30.fxdayo) | `ToonAnime_29` から FXAA を削除した版 |
+| [`archive/update.md`](archive/update.md) | `ToonAnime_2` から `ToonAnime_32` までの詳細な変更履歴 |
 | [`PPAL.fxdayo`](https://github.com/opopoposiop/MMDayo_AL) | AutoLuminous 互換 Bloom を担当する外部ポストプロセス。本ディレクトリには未同梱 |
 | `../hlsl/resources.hlsli` | MikuMikuDayo 側の共有リソース定義。シェーダーから相対参照 |
 | `../hlsl/yrz.hlsli` | MikuMikuDayo 側の共有ヘルパー。シェーダーから相対参照 |
@@ -44,6 +40,16 @@ CODEX,Claude code
 - SSAO はレイトレーシングパス、TLAS、GBuffer、共有カメラ情報を利用します。これらを提供する MikuMikuDayo 環境が必要です。
 - AutoLuminous 互換 Bloom を使用する場合は、対応する `PPAL.fxdayo` を別途用意してください。
 - `PPAL.fxdayo` と併用する場合、AutoLuminous 判定定数と GBuffer レイアウトを両ファイルで一致させる必要があります。
+
+詳細な前提は [`docs/compatibility.md`](docs/compatibility.md)、開発時の契約は [`docs/development.md`](docs/development.md)、公開前の確認項目は [`docs/validation.md`](docs/validation.md) を参照してください。
+
+## ライセンスと謝辞
+
+本プロジェクトの著作権者が権利を有するファイルには、ルートの [`LICENSE`](LICENSE) を適用します。外部プロジェクト、共有 HLSL、互換仕様に由来する部分の扱いは [`NOTICE.md`](NOTICE.md) を参照してください。
+
+- [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo) の `.fxdayo` レンダラーと共有 HLSL 環境を利用しています。
+- [MMDayo_AL](https://github.com/opopoposiop/MMDayo_AL) は、Bloom 用の外部 PPAL として連携できます。
+- AutoLuminous 方式の判定・発光表現を参考にしています。公式プロジェクトとの関係や動作保証を示すものではありません。
 
 ## 描画の流れ
 
@@ -194,7 +200,7 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 - テストコードのコメントには、何を確認するテストかを `What` として記載します。
 - コミットログには、変更が必要になった理由を `Why` として記載します。
 - コードコメントには、採用しなかった方法と理由を `WHY NOT` として残します。
-- Codexによる変更では、コメントだけの依頼で式、定数値、リソース名、パス順を変更しないでください。
+- コメント整理だけを行う場合は、式、定数値、リソース名、パス順を変更しないでください。
 
 コミットログの例:
 
@@ -225,10 +231,9 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 | `31` | 17個のユーザー調整値を `ToonAnime.pmx` のモーフ制御へ変更し、`initial.vmd` を追加 |
 | `32` | Edge色をHSV化し、1号影・2号影のHSV色を追加。23モーフを4グループへ整理 |
 
-完全な履歴は [`history/history.md`](history/history.md) を参照してください。
+収録版に基づく変更履歴は [`archive/update.md`](archive/update.md) を参照してください。
 
 ### 履歴上の注意
 
-- `ToonAnime_5`、`7`、`8`、`10` は履歴フォルダに存在しないため、個別の変更内容は未確認です。
+- `ToonAnime_5`、`7`、`8`、`10` はアーカイブに存在しないため、個別の変更内容は未確認です。
 - `ToonAnime_16` のリムライトは、`ToonAnime_15` をベースに再構成した `17` 以降へ継承されていません。
-- `ToonAnime_mob_01.fxdayo` は連番版ではないため、連番の変更履歴には含めていません。
