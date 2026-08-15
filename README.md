@@ -49,7 +49,7 @@
 
 - [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo) の `.fxdayo` レンダラーと共有 HLSL 環境を利用しています。
 - [MMDayo_AL](https://github.com/opopoposiop/MMDayo_AL) は、Bloom 用の外部 PPAL として連携できます。
-- AutoLuminous 方式の判定・発光表現を参考にしています。公式プロジェクトとの関係や動作保証を示すものではありません。
+- [AutoLuminous](https://www.nicovideo.jp/watch/sm16087751) の方式を参考にしています。そぼろ氏の作品との互換動作を目指したものであり、公式プロジェクトとの関係や動作保証を示すものではありません。
 
 ## 描画の流れ
 
@@ -194,9 +194,6 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 - PPAL の発光判定と `IsALEmissiveMat` が一致する
 - 透視投影と平行投影の両方で背景と SSAO の位置再構築が正しい
 
-
-```
-
 ## 変更履歴の要点
 
 | 版 | 主な変更 |
@@ -226,14 +223,3 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 
 - `ToonAnime_5`、`7`、`8`、`10` はアーカイブに存在しないため、個別の変更内容は未確認です。
 - `ToonAnime_16` のリムライトは、`ToonAnime_15` をベースに再構成した `17` 以降へ継承されていません。
-
-```
-
-## 謝辞・関連プロジェクト
-
-- [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo)
-  `.fxdayo` レンダラーおよび共有 HLSL 環境を利用しています。
-- [MMDayo_AL](https://github.com/opopoposiop/MMDayo_AL)
-  Bloom 用の PPAL ポストプロセスとして連携できます。
-- [AutoLuminous](https://www.nicovideo.jp/watch/sm16087751)
-  そぼろ氏の必須MME 互換動作の実装にあたり、仕様および動作を参考にしています
