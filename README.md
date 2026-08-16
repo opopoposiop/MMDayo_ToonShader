@@ -27,7 +27,7 @@
 | [`archive/ToonAnime_29.fxdayo`](archive/ToonAnime_29.fxdayo) | `ToonAnime_28` の描画処理へ編集・保守コメントを追加した版 |
 | [`archive/ToonAnime_30.fxdayo`](archive/ToonAnime_30.fxdayo) | `ToonAnime_29` から FXAA を削除した版 |
 | [`archive/CHANGELOG.md`](archive/CHANGELOG.md) | `ToonAnime_2` から `ToonAnime_32` までの詳細な変更履歴 |
-| [`PPAL.fxdayo`](https://github.com/opopoposiop/MMDayo_AL) | AutoLuminous 互換 Bloom を担当する外部ポストプロセス。本ディレクトリには未同梱 |
+| [`PPAL.fxdayo`](https://github.com/opopoposiop/MMDayo_AL) | AutoLuminous ぽい Bloom を担当する外部ポストプロセス。本ディレクトリには未同梱 |
 | `../hlsl/resources.hlsli` | MikuMikuDayo 側の共有リソース定義。シェーダーから相対参照 |
 | `../hlsl/yrz.hlsli` | MikuMikuDayo 側の共有ヘルパー。シェーダーから相対参照 |
 
