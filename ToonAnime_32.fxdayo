@@ -2,8 +2,8 @@
 // ToonAnime_32.fxdayo — HSVカラー・PMXモーフグループ対応版
 // ========================================================================
 //
-// このファイルは ToonAnime_31.fxdayo を基に、Edgeと2段階影の色を
-// HSV形式で調整し、PMXモーフを目・まゆ・リップ・その他へ整理した版です。
+// Edgeと2段階影の色をHSV形式で調整し、PMXモーフを
+// 目・まゆ・リップ・その他へ整理した版です。
 //
 // 【このファイルを調整する方へ】
 //   1. ToonAnime.pmx のモーフを1項目ずつ少しずつ変更してください。
@@ -11,25 +11,12 @@
 //   3. 「変更不可」「要コードレビュー」の範囲は、見た目だけでなく深度、
 //      透過、SSAO、PPAL との受け渡しを同時に壊す可能性があります。
 //
-// 【コメントの読み方】
-//   HOW     : コードが目的を実現する方法。
-//   WHY NOT : 一見簡単でも採用しなかった方法と、その理由。
-//   保守上の注意 : 将来の編集で守るべき契約・確認事項。
+// コメントは現行処理のHOW、WHY NOT、保守上の契約を記載します。
+// 動作確認項目は docs/validation.md、変更理由は CHANGELOG.md と
+// コミットログに記録します。
 //
-// 【テストについて】
-//   このファイルにはテストコードはありません。テストを追加する場合、その
-//   コメントには「何を確認するテストか（What）」を書き、実装方法の説明と
-//   混ぜないでください。
-//
-// 【変更履歴に書くこと】
-//   コミットログにはコードの要約だけでなく「なぜ変更が必要だったか（Why）」
-//   を記録してください。例:
-//   "半透明面が背後の人物へ AO の影を落としていたため、SSAO 遮蔽から除外"
-//
-// 保守メモ:
-//   - ToonAnime_32 は Edge/Shadow色をHSV化し、PMXモーフ表示枠を整理。
-//   - 修正依頼がコメント整備だけなら、式・定数値・リソース名・パス順を変えない。
-//   - コード変更時は、末尾の「変更時の確認項目」をすべて再確認する。
+// コード変更時は、式・定数値・リソース名・パス順だけでなく、深度、透過、
+// SSAO、PPALとの受け渡しを一体で確認してください。
 // ========================================================================
 
 #include "../hlsl/resources.hlsli"
@@ -175,84 +162,21 @@ using namespace YRZ;
 [HLSL]
 
 // ========================================================================
-// ToonAnime_32: ToonAnime_31 のEdge/Shadow色をHSV制御へ変更
+// PMXモーフによるHSVカラー制御
 // ========================================================================
 // WHY:
 //   RGB各成分よりも色相・彩度・明度を独立して調整しやすくし、1号影と2号影へ
 //   任意の色味を付けられるようにするためです。
 //
 // HOW:
-//   PMXのH/S/VモーフをHSVToRGBでRGBへ変換します。影色の初期値は白なので、
-//   initial.vmd適用時は31版と同じ見た目を維持します。
+//   PMXのH/S/VモーフをHSVToRGBでRGBへ変換します。initial.vmdを適用すると、
+//   標準のEdge色と影色を復元できます。
 //
 // WHY NOT:
 //   HSVをそのまま最終色として出力せず、必ずRGBへ変換してから材質色へ乗算します。
 //   HはSが0のとき見た目へ影響しないため、色を付ける場合はSも上げてください。
 // ========================================================================
 //
-// ToonAnime_28.fxdayo から継承した処理
-//
-// ToonAnime_28: Exclude alpha-blended polygons from SSAO.  A transparent
-// polygon must remain visible through normal alpha blending, but it must not
-// provide the GBuffer surface or act as an SSAO ray occluder; otherwise the
-// AO applied after compositing appears as an unwanted dark "shadow" on the
-// opaque character behind it.
-//
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// ToonAnime_26 の「人物 PMX の目材質が発光／透過する」回帰を修正
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-//
-// 【症状】
-//  ToonAnime_26 で人物 PMX の材質「目」（白目・瞳）が白く発光、
-//  または背後が透ける状態になった（ToonAnime26.png）。
-//  ToonAnime_23 では正常に描写される（ToonAnime23.png）。
-//
-// 【真因 — AL 誤判定材質の扱いが 23→26 で激変した】
-//  目材質はスペキュラほぼ黒 + shininess ≥ 100 のものが多く、
-//  IsALEmissiveMat（方式A: スペキュラ黒 + shininess≥100）が
-//  AutoLuminous 発光材質と判定する。判定自体は 23 も 26 も同一だが、
-//  判定後の描画が異なる:
-//   ・ToonAnime_23: 発光材質もフルブライト色を【通常アルファ合成
-//     (α=1)＋深度書き込みあり】で描画。不透明な目はそのまま塗られ、
-//     見た目はほぼ通常描画 → 正常に見えた。
-//   ・ToonAnime_26: 発光材質を一律【純加算合成（出力α=0）＋深度
-//     書き込みなし(MMDTrans)】に変更。白目が背景に加算されて白飛び
-//     （白の上に加算 → 飽和して真っ白）、深度も書かないため背後の
-//     ジオメトリが透けて見える。
-//  26 のこの変更は「交差する発光ビーム同士が互いを切り取らない」
-//  ために必要だったが、不透明な発光（誤判定された目を含む）まで
-//  加算・非遮蔽にしたのが行き過ぎだった。
-//
-// 【修正 — 発光材質をピクセル最終αで「不透明発光／半透明発光」に二分】
-//  発光カバレッジ emitCover（= 材質α × テクスチャα）で振り分ける:
-//   ・不透明発光 (emitCover ≥ OPAQUE_CUT)
-//       … 目・発光パネル等。23 と同じく【遮蔽する通常合成】。
-//         MMD パスで描画（深度テスト＋書き込み ON）。
-//         前乗算 α=1 出力 → result = emitLin + dst·0（完全上書き）。
-//         背後を正しく隠し、白飛び・透過が発生しない。
-//   ・半透明発光 (emitCover < OPAQUE_CUT)
-//       … 発光ビーム・グロー板等。26 と同じく【純加算合成】。
-//         MMDTrans パスで描画（深度書き込み OFF、出力 α=0）。
-//         交差ビームは互いを切り取らず、重なりは黒く潰れない。
-//
-//  これにより:
-//   ・目（不透明）は 23 と同一の見た目に復帰（発光・透過しない）
-//   ・半透明発光ビームは 26 の成果をそのまま維持
-//   ・非発光半透明が発光を遮蔽しない（26 の成果）も維持
-//   ・不透明／半透明の判定は従来通りピクセル単位の最終α
-//
-//  パス構成・ブレンド設定は 26 から変更なし。変更は HLSL の振り分け
-//  ロジックのみ:
-//   (1) MMDColor: AL 発光分岐を emitCover で二分（上記）
-//   (2) MMD パス PS: 「発光材質を一律 discard」を廃止。
-//       c.a < OPAQUE_CUT の discard が半透明発光（α=0）も自然に弾く。
-//   (3) MMDTrans パス PS: 判定を「c.a ≥ OPAQUE_CUT なら discard」に
-//       単純化。不透明発光（α=1）は MMD パス描画済みなので除外され、
-//       半透明発光（α=0）と非発光半透明のみ描画される。
-//
-//  AutoLuminous 互換の Bloom 処理は PPAL.fxdayo（ポストプロセス）が担当。
-//  （GBuffer への AL 材質書き込みは従来通り維持 → PPAL の解析に影響なし）
-
 // Radeon向け: bindlessテクスチャ添え字をNonUniformResourceIndexで囲う
 // 変更不可: AMD GPU を含む環境でテクスチャ配列の参照先を正しく伝えるために必要。
 // WHY NOT: NURI を外すと、GPU によっては別マテリアルのテクスチャを読む可能性がある。
@@ -440,8 +364,6 @@ float4 PS(VSO vso) : SV_TARGET
 	return float4(o.rgb, 0);
 }
 #endif
-
-
 // ============================================================
 // Edgeパス: 外形(シルエット)エッジ描画
 // ============================================================
@@ -454,7 +376,8 @@ float4 PS(VSO vso) : SV_TARGET
 // WHY NOT:
 //   PNG の透明部分を無視して面全体へ線を描くと、網・レース・髪の隙間が黒く
 //   塗り潰されます。発光材質へ線を描くと、光の板に不自然な外枠が出ます。
-// 保守メモ: discard 条件を減らす変更では ToonAnime_22～23 の回帰理由を確認する。
+// 保守メモ: discard 条件を減らす変更では、透明テクセルの輪郭線・深度・SSAOへの
+// 影響を確認する。
 #ifdef YRZ_PASS_Edge
 struct VSO {
 	float4 position:SV_POSITION;
@@ -503,7 +426,6 @@ float4 PS(VSO vso, uint iFace:SV_PrimitiveID) : SV_TARGET
 	return (m.edgeSize >= 1.0) ? m.edgeColor : EDGE_GRAY;
 }
 #endif
-
 
 // ============================================================
 // MMDパス / MMDTransパス / GBufferパス: 2段階アニメ調トゥーンシェーディング
@@ -563,7 +485,7 @@ void CalcAnimeShadow(float NoL, out float inShadow1, out float inShadow2)
 // MMDColor
 //   戻り値は【前乗算アルファ】(premultiplied alpha)。
 //     ・通常材質       : float4(rgb·a, a)        → 通常のアルファ合成
-//     ・AL不透明発光   : float4(emitLin, 1)      → 遮蔽する通常合成（23 互換）
+//     ・AL不透明発光   : float4(emitLin, 1)      → 遮蔽する通常合成
 //     ・AL半透明発光   : float4(emitLin·cov, 0)  → 純加算合成（重なり減衰なし）
 //   戻り値 .a を「ピクセル単位の不透明度」として MMD/MMDTrans の振り分けに使う。
 //   texAlpha には PNG テクスチャ単独の α 原値を出力。
@@ -610,10 +532,8 @@ float4 MMDColor(VSO vso, uint iFace, bool vface, out float texAlpha)
 
 	// ── AutoLuminous 発光材質（方式A）: 早期リターン ──────────────
 	//   ピクセル最終α (emitCover) で「不透明発光／半透明発光」を二分する。
-	//   【ToonAnime_27 修正】不透明発光（目・発光パネル等 — AL 誤判定
-	//   される目材質を含む）は 23 と同じく背後を遮蔽する通常合成にし、
-	//   白飛び・透過の回帰を解消。半透明発光（ビーム等）のみ 26 の
-	//   純加算合成を維持する。
+	//   不透明発光（目・発光パネル等）は背後を遮蔽する通常合成にし、
+	//   半透明発光（ビーム等）は深度を書かない純加算合成にする。
 	if (IsALEmissiveMat(m))
 	{
 		float emissiveScale = clamp(
@@ -625,7 +545,7 @@ float4 MMDColor(VSO vso, uint iFace, bool vface, out float texAlpha)
 
 		if (emitCover >= OPAQUE_CUT) {
 			// 不透明発光: 遮蔽する通常合成（前乗算 α=1 → 完全上書き）。
-			//   MMD パスで描画され深度も書く（23 互換の見た目）。
+			//   MMD パスで描画され、深度も書き込む。
 			//   result = emitLin + dst·(1-1) = emitLin
 			return float4(emitLin, 1.0);
 		}
@@ -679,7 +599,7 @@ float4 MMDColor(VSO vso, uint iFace, bool vface, out float texAlpha)
 
 	#ifdef YRZ_PASS_MMD
 		// ── MMDパス PS（不透明ピクセルのみ。深度書き込み ON）──
-		//   【ToonAnime_27 修正】発光材質の一律 discard を廃止。
+		//   発光材質を一律にdiscardせず、最終アルファで描画先を分ける。
 		//   MMDColor が返す最終α で振り分ける:
 		//     ・不透明発光   → α=1 → ここで描画（深度書き込み・遮蔽あり）
 		//     ・半透明発光   → α=0 → OPAQUE_CUT 未満で discard → MMDTrans へ
@@ -701,8 +621,8 @@ float4 MMDColor(VSO vso, uint iFace, bool vface, out float texAlpha)
 		//     ・半透明     → result = rgb·a + dst·(1-a)  （アルファ合成）
 		//     ・半透明発光 → result = emitLin·cov + dst   （加算合成, α=0出力）
 		//   を同一パスで同時に処理する。
-		//   【ToonAnime_27 修正】不透明発光（α=1）は MMD パスで描画済みの
-		//   ため、「c.a ≥ OPAQUE_CUT なら discard」の単一判定で自然に除外。
+		//   不透明発光（α=1）はMMDパスで描画済みのため、
+		//   「c.a ≥ OPAQUE_CUT ならdiscard」の単一判定で除外する。
 		float4 PS(VSO vso, uint iFace:SV_PrimitiveID, bool vface:SV_IsFrontFace) : SV_TARGET
 		{
 			float ta;
@@ -751,8 +671,6 @@ float4 MMDColor(VSO vso, uint iFace, bool vface, out float texAlpha)
 	#endif
 
 #endif
-
-
 // ============================================================
 // SSAOパス: レイトレーシングによるアンビエントオクルージョン
 // ============================================================
@@ -853,8 +771,6 @@ void AnyHit(inout SSAOPayload payload, Attribute attr)
 }
 
 #endif
-
-
 // ============================================================
 // Copyパス: RasterOut → RTOutput & SSAO適用
 //           MyGBuffer1/2/NormalDepth → グローバル GBuffer へ転写
@@ -903,21 +819,4 @@ float4 PS(VSO vso) : SV_TARGET
 }
 
 #endif
-
-
-// ========================================================================
-// 変更時の確認項目
-// ========================================================================
-// テストコメントには「何を確認するか（What）」を記載すること。
-//
-// What: 不透明な目・肌・衣装が発光せず、背後を正しく隠すこと。
-// What: 半透明の髪・レース・ビームが、奥の不透明物を必要以上に隠さないこと。
-// What: 交差する半透明発光プレーンが黒くならず、交差線で欠けないこと。
-// What: PNG の完全透明部に色・輪郭線・深度・AO の影が残らないこと。
-// What: 半透明ポリゴンが SSAO の基準面やレイ遮蔽面にならないこと。
-// What: エッジ無効材質と AutoLuminous 材質に不要な輪郭線が出ないこと。
-// What: PPAL の発光判定と ToonAnime の IsALEmissiveMat が一致すること。
-// What: 透視投影・平行投影の両方で背景と SSAO の位置再構築が正しいこと。
-//
-// コミットログには、上記のどの不具合・要求のために変更したか（Why）を書く。
-// ========================================================================
+// End of ToonAnime_32.fxdayo.
