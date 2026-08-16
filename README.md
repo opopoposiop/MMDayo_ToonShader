@@ -1,4 +1,4 @@
-# MikuMikuDayo ToonShader
+# ToonShader for MikuMikuDayo
 
 [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo) 用のアニメ調トゥーンシェーダーです。
 
