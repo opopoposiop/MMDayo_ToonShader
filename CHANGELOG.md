@@ -1,15 +1,15 @@
 # ToonAnime 変更履歴
 
-`ToonAnime_2.fxdayo` から `ToonAnime_32.fxdayo` まで、対象フォルダと親フォルダに現存する版をファイル更新日時順（同時にバージョン番号順）で整理した。
+`ToonAnime_2.fxdayo` から `ToonAnime_32.fxdayo` まで、リポジトリ内で確認できた版をファイル更新日時順（同時にバージョン番号順）で整理した。過去版のシェーダーファイル本体はローカルの `archive/` にのみ保存する。
 
 > 注記
 >
 > - `ToonAnime_5.fxdayo`、`ToonAnime_7.fxdayo`、`ToonAnime_8.fxdayo`、`ToonAnime_10.fxdayo` は対象フォルダに存在しないため、個別の変更内容は確認できない。
-> - `ToonAnime_9.fxdayo` はファイル内の記述では `ToonAnime_8.fxdayo` ベース、`ToonAnime_11.fxdayo` は `ToonAnime_9.fxdayo` ベースである。
+> - `ToonAnime_9.fxdayo` はファイル内の記述では `ToonAnime_8.fxdayo` ベース、`ToonAnime_11.fxdayo` は `ToonAnime_9.fxdayo` ベースである。これはファイル内の記述に基づく整理であり、欠番の実装内容を確定するものではない。
 
 ## 2026-03-25 — ToonAnime_2.fxdayo
 
-- `Preview.fxdayo` をベースに、`Subayai.fxdayo` の構成を参照したアニメ調トゥーンシェーダーとして構築。
+- MikuMikuDayo に同梱されている `Preview.fxdayo` をベースに、同梱レンダー `Subayai.fxdayo` の構成を参照して、アニメ調トゥーンシェーダーとして構築。
 - `smoothstep` による2トーン影、青みを持つ `ShadowTint`、段階的なハードスペキュラ、フレネル型リムライトを実装。
 - GBufferの法線差と深度差から輪郭を検出する、画面空間の `Outline` パスを追加。
 - 高輝度抽出、水平・垂直の7tap分離型ガウスブラーを行う `BrightExtract → DiffusionX → DiffusionY` 構成を実装。
@@ -36,7 +36,7 @@
 
 ## 2026-03-25 — ToonAnime_6.fxdayo
 
-- `Preview.fxdayo` 系をベースに、バックフェース拡張法によるシルエット用 `Edge` パスを追加。
+- MikuMikuDayo 同梱の `Preview.fxdayo` 系をベースに、バックフェース拡張法によるシルエット用 `Edge` パスを追加。
 - `MMD` パスを、シャープな明暗境界と濃い影色を持つアニメ調トゥーンシェーディングへ変更。
 - `Edge` パスで作った深度を保持するため、後続の `MMD` パスでは Z バッファをクリアしない構成に変更。
 - 透明・半透明マテリアルはエッジ描画から除外。

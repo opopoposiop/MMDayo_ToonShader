@@ -6,6 +6,9 @@ Thumbs.db
 captures/
 screenshots/
 
+# Historical shader versions are kept locally and are not published.
+archive/
+
 # Local agent and editor state
 .codex/
 .agents/

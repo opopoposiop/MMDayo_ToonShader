@@ -21,12 +21,11 @@
 | ファイル | 内容 |
 | --- | --- |
 | [`ToonAnime_32.fxdayo`](ToonAnime_32.fxdayo) | 現行シェーダー。HSVカラーと23項目のPMXモーフ調整に対応 |
-| [`ToonAnime_31.fxdayo`](archive/ToonAnime_31.fxdayo) | Edge色がRGB形式で、影色追加前の旧版 |
+| `ToonAnime_31.fxdayo` | Edge色がRGB形式で、影色追加前の旧版。過去版本体はローカルの `archive/` にのみ保存 |
 | [`ToonAnime.pmx`](ToonAnime.pmx) | `ToonAnime_32` のユーザー定義値コントローラー |
 | [`initial.vmd`](initial.vmd) | 31版と同じ見た目になる初期値を23モーフのフレーム0へ設定 |
-| [`archive/ToonAnime_29.fxdayo`](archive/ToonAnime_29.fxdayo) | `ToonAnime_28` の描画処理へ編集・保守コメントを追加した版 |
-| [`archive/ToonAnime_30.fxdayo`](archive/ToonAnime_30.fxdayo) | `ToonAnime_29` から FXAA を削除した版 |
-| [`archive/CHANGELOG.md`](archive/CHANGELOG.md) | `ToonAnime_2` から `ToonAnime_32` までの詳細な変更履歴 |
+| `ToonAnime_29.fxdayo` / `ToonAnime_30.fxdayo` | 過去版本体はローカルの `archive/` にのみ保存 |
+| [`CHANGELOG.md`](CHANGELOG.md) | `ToonAnime_2` から `ToonAnime_32` までの詳細な変更履歴 |
 | [`PPAL.fxdayo`](https://github.com/opopoposiop/MMDayo_AL) | AutoLuminous ぽい Bloom を担当する外部ポストプロセス。本ディレクトリには未同梱 |
 | `../hlsl/resources.hlsli` | MikuMikuDayo 側の共有リソース定義。シェーダーから相対参照 |
 | `../hlsl/yrz.hlsli` | MikuMikuDayo 側の共有ヘルパー。シェーダーから相対参照 |
@@ -217,7 +216,7 @@ SSAO は透明面の合成後に最終色へ適用されます。そのため半
 | `31` | 17個のユーザー調整値を `ToonAnime.pmx` のモーフ制御へ変更し、`initial.vmd` を追加 |
 | `32` | Edge色をHSV化し、1号影・2号影のHSV色を追加。23モーフを4グループへ整理 |
 
-収録版に基づく変更履歴は [`archive/CHANGELOG.md`](archive/CHANGELOG.md) を参照してください。
+収録版に基づく変更履歴は [`CHANGELOG.md`](CHANGELOG.md) を参照してください。過去版シェーダー本体は公開対象外で、ローカルの `archive/` にのみ保存します。
 
 ### 履歴上の注意
 
