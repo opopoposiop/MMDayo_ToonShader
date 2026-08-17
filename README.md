@@ -2,8 +2,6 @@
 
 [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo) 用のアニメ調トゥーンシェーダーです。
 
-現在の推奨版は [`ToonAnime_32.fxdayo`](ToonAnime_32.fxdayo) です。`ToonAnime_32` は `ToonAnime_31` を基に、Edge・1号影・2号影の色をHSV形式で調整できるようにし、23個のPMXモーフを「目・まゆ・リップ・その他」へ整理した版です。
-
 ## 主な機能
 
 - ライト・1号影・2号影による2段階アニメ影
