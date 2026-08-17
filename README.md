@@ -32,7 +32,7 @@
 
 - MikuMikuDayo の `.fxdayo` レンダラーとして読み込むことを前提としています。
 - `ToonAnime_32.fxdayo` から見て `../hlsl/resources.hlsli` と `../hlsl/yrz.hlsli` を参照できる配置が必要です。
-- 上記補足 `../MikuMikuDayo`傘下の`/render`に `ToonAnime_32.fxdayo`を配置
+- 上記補足 `../MikuMikuDayo`傘下の`/renderer`に `ToonAnime_32.fxdayo`を配置
 - `ToonAnime.pmx` を MikuMikuDayo に読み込み、モデルへ `initial.vmd` を適用してから使用してください。
 - シェーダーはコントローラーをファイル名 `ToonAnime.pmx` で参照します。同じフォルダへの配置を推奨しますが、MikuMikuDayo がそのモデルを読み込める配置であれば必須ではありません。
 - SSAO はレイトレーシングパス、TLAS、GBuffer、共有カメラ情報を利用します。これらを提供する MikuMikuDayo 環境が必要です。
