@@ -1,6 +1,7 @@
 # ToonShader for MikuMikuDayo
 
 [MikuMikuDayo](https://github.com/pennennennennennenem/MikuMikuDayo) 用のアニメ調トゥーンシェーダーです。
+> 本プロジェクトはMikuMikuDayoの公式配布物ではありません。
 
 ## 主な機能
 
